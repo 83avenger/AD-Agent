@@ -1,2 +1,8 @@
 DCAnomalyAgent/State/*.json
 DCAnomalyAgent/State/*.log
+DCAnomalyAgent/State/*.md
+WebApp/reports/
+WebApp/__pycache__/
+WebApp/*.pyc
+*.pyc
+__pycache__/

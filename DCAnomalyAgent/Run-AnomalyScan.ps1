@@ -13,6 +13,11 @@
     Optionally limit compliance check to one or more frameworks: CIS, NIST, ISO.
 .PARAMETER SeverityFilter
     Optionally limit compliance check to specific severity levels: Critical, High, Medium, Low.
+.PARAMETER DomainControllerOverride
+    Override the DC list from settings.psd1 (comma-separated). Used by the web UI.
+.PARAMETER JsonOutput
+    Emit all results as a single JSON object on stdout instead of human-readable output.
+    Used by the web UI to consume results programmatically.
 #>
 [CmdletBinding()]
 param(
@@ -20,7 +25,9 @@ param(
     [switch]$DryRun,
     [switch]$ComplianceScan,
     [string[]]$FrameworkFilter,
-    [ValidateSet('Critical','High','Medium','Low')][string[]]$SeverityFilter
+    [ValidateSet('Critical','High','Medium','Low')][string[]]$SeverityFilter,
+    [string]$DomainControllerOverride,
+    [switch]$JsonOutput
 )
 
 $ErrorActionPreference = 'Stop'
@@ -35,6 +42,11 @@ if ($ComplianceScan) {
 
 $config = Import-PowerShellDataFile -Path $ConfigPath
 $scanTime = Get-Date
+
+if ($DomainControllerOverride) {
+    $config = $config.Clone()
+    $config['DomainControllers'] = $DomainControllerOverride -split ',' | ForEach-Object { $_.Trim() }
+}
 
 function Write-ScanLog {
     param([string]$Message)
@@ -150,7 +162,24 @@ if ($ComplianceScan -and $config.Compliance.Enabled) {
         }
     }
 
+    if ($JsonOutput) {
+        @{
+            ScanTime        = $scanTime.ToString('o')
+            Anomalies       = $allAnomalies
+            ComplianceGaps  = $gaps
+            ComplianceSummary = $summary
+        } | ConvertTo-Json -Depth 8
+        return
+    }
     return [pscustomobject]@{ Anomalies = $allAnomalies; ComplianceGaps = $gaps; Summary = $summary }
+}
+
+if ($JsonOutput) {
+    @{
+        ScanTime  = $scanTime.ToString('o')
+        Anomalies = $allAnomalies
+    } | ConvertTo-Json -Depth 8
+    return
 }
 
 return $allAnomalies

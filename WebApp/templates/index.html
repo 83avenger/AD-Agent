@@ -1,0 +1,125 @@
+{% extends "base.html" %}
+{% block title %}Run Scan — DC Anomaly Agent{% endblock %}
+
+{% block content %}
+
+<div style="margin: 1.5rem 0 .5rem;">
+  <h1 style="font-size:1.6rem; font-weight:800; color:var(--brand-dark);">New Scan</h1>
+  <p style="color:var(--muted); font-size:.9rem; margin-top:.3rem;">
+    Configure your scan targets and options, then run to see anomaly and compliance findings.
+  </p>
+</div>
+
+{% if error %}
+<div class="alert alert-error">⚠ {{ error }}</div>
+{% endif %}
+
+<form method="POST" action="/scan" id="scanForm">
+
+  <div class="card">
+    <div class="card-header">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/>
+        <line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/>
+      </svg>
+      Scan Targets
+    </div>
+
+    <label for="domain_controllers">Domain Controller Hostnames</label>
+    <textarea
+      id="domain_controllers"
+      name="domain_controllers"
+      rows="4"
+      placeholder="dc01.contoso.com&#10;dc02.contoso.com&#10;(one per line, or comma-separated)"
+      required
+    >{{ scan_config.dcs | join('\n') if scan_config else '' }}</textarea>
+    <p style="font-size:.78rem; color:var(--muted); margin-top:.3rem;">
+      The scan server needs WinRM access to each DC (typically already configured in a domain environment).
+    </p>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/>
+      </svg>
+      Scan Options
+    </div>
+
+    <div class="form-grid">
+      <div>
+        <label>Scan Type</label>
+        <div class="checkbox-group">
+          {% set cur_types = scan_config.scan_types if scan_config else ['anomaly'] %}
+          <div class="checkbox-chip">
+            <input type="checkbox" id="st_anomaly" name="scan_types" value="anomaly"
+              {{'checked' if 'anomaly' in cur_types else ''}}>
+            <label for="st_anomaly">🔍 Anomaly Scan</label>
+          </div>
+          <div class="checkbox-chip">
+            <input type="checkbox" id="st_compliance" name="scan_types" value="compliance"
+              {{'checked' if 'compliance' in cur_types else ''}}>
+            <label for="st_compliance">📋 Compliance Scan</label>
+          </div>
+        </div>
+        <p style="font-size:.78rem; color:var(--muted); margin-top:.4rem;">
+          Anomaly: event log analysis + UEBA baseline.<br>
+          Compliance: checks against NIST / ISO 27001 / CIS Benchmarks.
+        </p>
+      </div>
+
+      <div>
+        <label>Framework Filter <span style="color:var(--muted); font-weight:400;">(compliance only — leave blank for all)</span></label>
+        <div class="checkbox-group">
+          {% set cur_fw = scan_config.frameworks if scan_config else [] %}
+          {% for fw in ['CIS','NIST','ISO'] %}
+          <div class="checkbox-chip">
+            <input type="checkbox" id="fw_{{fw}}" name="frameworks" value="{{fw}}"
+              {{'checked' if fw in cur_fw else ''}}>
+            <label for="fw_{{fw}}">{{fw}}</label>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+
+      <div>
+        <label>Severity Filter <span style="color:var(--muted); font-weight:400;">(compliance only — leave blank for all)</span></label>
+        <div class="checkbox-group">
+          {% set cur_sev = scan_config.severities if scan_config else [] %}
+          {% for sev, cls in [('Critical','badge-critical'),('High','badge-high'),('Medium','badge-medium'),('Low','badge-low')] %}
+          <div class="checkbox-chip">
+            <input type="checkbox" id="sev_{{sev}}" name="severities" value="{{sev}}"
+              {{'checked' if sev in cur_sev else ''}}>
+            <label for="sev_{{sev}}"><span class="badge {{cls}}">{{sev}}</span></label>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div style="display:flex; gap:.8rem; align-items:center;">
+    <button type="submit" class="btn btn-primary" id="submitBtn">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+        <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+      </svg>
+      Run Scan
+    </button>
+    <span id="scanningMsg" style="display:none; font-size:.875rem; color:var(--muted);">
+      ⏳ Scanning — this may take up to 2 minutes…
+    </span>
+  </div>
+
+</form>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.getElementById('scanForm').addEventListener('submit', function() {
+  document.getElementById('submitBtn').disabled = true;
+  document.getElementById('submitBtn').textContent = 'Scanning…';
+  document.getElementById('scanningMsg').style.display = 'inline';
+});
+</script>
+{% endblock %}
