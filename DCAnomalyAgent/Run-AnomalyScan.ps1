@@ -27,7 +27,12 @@ param(
     [string[]]$FrameworkFilter,
     [ValidateSet('Critical','High','Medium','Low')][string[]]$SeverityFilter,
     [string]$DomainControllerOverride,
-    [switch]$JsonOutput
+    [switch]$JsonOutput,
+    # Limit the compliance scan to specific asset types. Default: all configured types.
+    [ValidateSet('DomainController','MemberServer','Workstation')][string[]]$AssetType,
+    # Override the target host list for compliance (comma-separated). Requires -AssetType
+    # with a single value so the right controls are selected. Used by the web UI.
+    [string]$TargetHostsOverride
 )
 
 $ErrorActionPreference = 'Stop'
@@ -127,16 +132,35 @@ if ($ComplianceScan -and $config.Compliance.Enabled) {
     $effectiveFrameworkFilter = if ($FrameworkFilter) { $FrameworkFilter } else { $config.Compliance.FrameworkFilter }
     $effectiveSeverityFilter  = if ($SeverityFilter)  { $SeverityFilter  } else { $config.Compliance.SeverityFilter  }
 
-    $getControlsParams = @{ FrameworkPath = $config.Compliance.FrameworkPath }
-    if ($effectiveFrameworkFilter) { $getControlsParams['FrameworkFilter'] = $effectiveFrameworkFilter }
-    if ($effectiveSeverityFilter)  { $getControlsParams['SeverityFilter']  = $effectiveSeverityFilter  }
+    # Which asset types to scan: -AssetType param, else all configured types.
+    $assetTypesToScan = if ($AssetType) { $AssetType } else { @($config.Assets.Keys) }
 
-    $controls = Get-ComplianceControls @getControlsParams
-    Write-ScanLog "Running $($controls.Count) compliance control(s) across $($config.DomainControllers.Count) DC(s)..."
+    $scanResults = @()
+    foreach ($at in $assetTypesToScan) {
+        # Resolve targets for this asset type (override > config hosts > AD discovery > DC fallback)
+        if ($TargetHostsOverride -and $AssetType.Count -eq 1) {
+            $targets = $TargetHostsOverride -split ',' | ForEach-Object { $_.Trim() }
+        } else {
+            $assetCfg = $config.Assets[$at]
+            if (-not $assetCfg) { Write-ScanLog "No asset config for '$at' — skipping."; continue }
+            $targets = Get-AssetTargets -AssetType $at -AssetConfig $assetCfg `
+                -FallbackHosts $config.DomainControllers
+        }
 
-    $scanResults = Invoke-ComplianceScan -DomainControllers $config.DomainControllers -Controls $controls
-    $gaps        = Get-ComplianceGaps -ScanResults $scanResults
-    $summary     = Get-ComplianceSummary -ScanResults $scanResults
+        if (-not $targets) { Write-ScanLog "No targets resolved for '$at' — skipping."; continue }
+
+        # Select only controls applicable to this asset type
+        $getControlsParams = @{ FrameworkPath = $config.Compliance.FrameworkPath; AssetTypeFilter = $at }
+        if ($effectiveFrameworkFilter) { $getControlsParams['FrameworkFilter'] = $effectiveFrameworkFilter }
+        if ($effectiveSeverityFilter)  { $getControlsParams['SeverityFilter']  = $effectiveSeverityFilter  }
+        $controls = Get-ComplianceControls @getControlsParams
+
+        Write-ScanLog "[$at] Running $($controls.Count) control(s) across $(@($targets).Count) host(s)..."
+        $scanResults += Invoke-ComplianceScan -Targets $targets -Controls $controls -AssetType $at
+    }
+
+    $gaps    = Get-ComplianceGaps -ScanResults $scanResults
+    $summary = Get-ComplianceSummary -ScanResults $scanResults
 
     Write-ScanLog "Compliance scan complete: $($summary.Passed)/$($summary.TotalControls) passing ($($summary.ScorePct)%). Gaps: $($gaps.Count)."
 

@@ -53,13 +53,37 @@
     # Compliance scanning
     Compliance = @{
         Enabled          = $true
-        FrameworkPath    = "$PSScriptRoot\compliance-frameworks.psd1"
+        # One or more framework files. The DC framework holds domain-wide + DC checks;
+        # the endpoints framework holds host-level checks for member servers/workstations.
+        FrameworkPath    = @(
+            "$PSScriptRoot\compliance-frameworks.psd1"
+            "$PSScriptRoot\compliance-endpoints.psd1"
+        )
         # Filter by framework name (e.g. 'CIS','NIST','ISO') or leave empty for all
         FrameworkFilter  = @()
         # Filter by severity or leave empty for all: 'Critical','High','Medium','Low'
         SeverityFilter   = @()
         # Path where the full markdown report is saved locally after each scan
         ReportOutputPath = "$PSScriptRoot\..\State\compliance-report.md"
+    }
+
+    # Asset inventory — targets for compliance scanning by asset type.
+    # Each AssetType runs only the controls whose AppliesTo includes that type.
+    # You can list hosts explicitly, or set DiscoverFromAD = $true to auto-enumerate.
+    Assets = @{
+        DomainController = @{
+            # Defaults to the DomainControllers list above when empty
+            Hosts         = @()
+            DiscoverFromAD = $true   # uses Get-ADDomainController -Filter *
+        }
+        MemberServer = @{
+            Hosts         = @('app01.contoso.com','sql01.contoso.com')
+            DiscoverFromAD = $false  # set $true to auto-enumerate server OS computers from AD
+        }
+        Workstation = @{
+            Hosts         = @()
+            DiscoverFromAD = $false  # set $true to auto-enumerate client OS computers from AD
+        }
     }
 
     LogPath = "$PSScriptRoot\..\State\scan.log"

@@ -34,7 +34,50 @@ Describe 'Get-ComplianceControls' {
     }
 }
 
+Describe 'Get-ComplianceControls AssetTypeFilter' {
+    It 'returns only MemberServer-applicable controls from the endpoints file' {
+        $controls = Get-ComplianceControls `
+            -FrameworkPath "$PSScriptRoot\..\Config\compliance-endpoints.psd1" `
+            -AssetTypeFilter 'MemberServer'
+        $controls.Count | Should -BeGreaterThan 0
+        foreach ($c in $controls) { $c.AppliesTo | Should -Contain 'MemberServer' }
+    }
+
+    It 'returns Workstation-only controls (e.g. BitLocker) when filtering Workstation' {
+        $controls = Get-ComplianceControls `
+            -FrameworkPath "$PSScriptRoot\..\Config\compliance-endpoints.psd1" `
+            -AssetTypeFilter 'Workstation'
+        ($controls | Where-Object { $_.Id -eq 'EP-BL-001' }) | Should -Not -BeNullOrEmpty
+    }
+
+    It 'merges multiple framework files' {
+        $controls = Get-ComplianceControls -FrameworkPath @(
+            "$PSScriptRoot\..\Config\compliance-frameworks.psd1",
+            "$PSScriptRoot\..\Config\compliance-endpoints.psd1"
+        )
+        $controls.Count | Should -BeGreaterThan 20
+    }
+
+    It 'treats controls with no AppliesTo as DomainController-only' {
+        $controls = Get-ComplianceControls `
+            -FrameworkPath "$PSScriptRoot\..\Config\compliance-frameworks.psd1" `
+            -AssetTypeFilter 'Workstation'
+        # The DC framework controls have no AppliesTo, so none should match Workstation
+        $controls.Count | Should -Be 0
+    }
+}
+
 Describe 'Invoke-ComplianceScan' {
+    It 'tags results with the supplied AssetType' {
+        $controls = @(@{
+            Id = 'T'; Title = 'x'; Severity = 'Low'; Frameworks = @{ CIS = 'n/a' }
+            Expected = 'y'; Remediation = 'z'
+            Check = { param($t) [pscustomobject]@{ Pass = $true; Actual = 'ok' } }
+        })
+        $r = Invoke-ComplianceScan -Targets @('app01') -Controls $controls -AssetType 'MemberServer'
+        $r[0].AssetType | Should -Be 'MemberServer'
+    }
+
     It 'returns a result for each control-DC pair' {
         $controls = @(
             @{

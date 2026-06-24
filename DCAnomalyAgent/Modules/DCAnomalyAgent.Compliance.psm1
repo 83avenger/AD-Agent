@@ -12,13 +12,31 @@
 function Get-ComplianceControls {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][string]$FrameworkPath,
+        [Parameter(Mandatory)][string[]]$FrameworkPath,
         [string[]]$FrameworkFilter,
-        [ValidateSet('Critical','High','Medium','Low')][string[]]$SeverityFilter
+        [ValidateSet('Critical','High','Medium','Low')][string[]]$SeverityFilter,
+        # Filter to controls applicable to a given asset type. Controls declare
+        # applicability via an 'AppliesTo' array (e.g. DomainController, MemberServer,
+        # Workstation). Controls with no AppliesTo are treated as DomainController-only.
+        [string]$AssetTypeFilter
     )
 
-    $data = Import-PowerShellDataFile -Path $FrameworkPath
-    $controls = $data.Controls
+    $controls = @()
+    foreach ($path in $FrameworkPath) {
+        if (-not (Test-Path $path)) {
+            Write-Warning "Compliance framework file not found: $path"
+            continue
+        }
+        $data = Import-PowerShellDataFile -Path $path
+        $controls += $data.Controls
+    }
+
+    if ($AssetTypeFilter) {
+        $controls = $controls | Where-Object {
+            $applies = if ($_.ContainsKey('AppliesTo')) { $_.AppliesTo } else { @('DomainController') }
+            $applies -contains $AssetTypeFilter
+        }
+    }
 
     if ($FrameworkFilter) {
         $controls = $controls | Where-Object {
@@ -37,29 +55,31 @@ function Get-ComplianceControls {
 function Invoke-ComplianceScan {
     <#
     .SYNOPSIS
-        Runs all loaded compliance controls against each DC and returns gap findings.
+        Runs all loaded compliance controls against each target host and returns gap findings.
     .OUTPUTS
         Array of [pscustomobject] with: ControlId, Title, Severity, Frameworks,
-        ComputerName, Pass, Actual, Expected, Remediation
+        ComputerName, AssetType, Pass, Actual, Expected, Remediation
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][string[]]$DomainControllers,
-        [Parameter(Mandatory)][array]$Controls
+        [Parameter(Mandatory)][Alias('DomainControllers')][string[]]$Targets,
+        [Parameter(Mandatory)][array]$Controls,
+        [string]$AssetType = 'DomainController'
     )
 
     $results = @()
 
-    foreach ($dc in $DomainControllers) {
+    foreach ($target in $Targets) {
         foreach ($control in $Controls) {
             try {
-                $checkResult = & $control.Check $dc
+                $checkResult = & $control.Check $target
                 $results += [pscustomobject]@{
                     ControlId    = $control.Id
                     Title        = $control.Title
                     Severity     = $control.Severity
                     Frameworks   = $control.Frameworks
-                    ComputerName = $dc
+                    ComputerName = $target
+                    AssetType    = $AssetType
                     Pass         = $checkResult.Pass
                     Actual       = $checkResult.Actual
                     Expected     = $control.Expected
@@ -71,7 +91,8 @@ function Invoke-ComplianceScan {
                     Title        = $control.Title
                     Severity     = $control.Severity
                     Frameworks   = $control.Frameworks
-                    ComputerName = $dc
+                    ComputerName = $target
+                    AssetType    = $AssetType
                     Pass         = $false
                     Actual       = "ERROR: $_"
                     Expected     = $control.Expected
@@ -198,5 +219,57 @@ function Format-ComplianceReport {
     return $sb.ToString()
 }
 
+function Get-AssetTargets {
+    <#
+    .SYNOPSIS
+        Resolves the list of target hosts for a given asset type from config,
+        optionally discovering them from Active Directory.
+    .PARAMETER AssetType
+        DomainController | MemberServer | Workstation
+    .PARAMETER AssetConfig
+        The per-asset-type hashtable from settings.psd1 (Hosts, DiscoverFromAD).
+    .PARAMETER FallbackHosts
+        Used for DomainController when Hosts is empty (the top-level DomainControllers list).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$AssetType,
+        [Parameter(Mandatory)][hashtable]$AssetConfig,
+        [string[]]$FallbackHosts
+    )
+
+    $targets = @()
+    if ($AssetConfig.Hosts) { $targets += $AssetConfig.Hosts }
+
+    if ($AssetConfig.DiscoverFromAD) {
+        try {
+            switch ($AssetType) {
+                'DomainController' {
+                    $targets += (Get-ADDomainController -Filter *).HostName
+                }
+                'MemberServer' {
+                    # Server OS computers that are not DCs
+                    $targets += (Get-ADComputer -Filter {
+                        OperatingSystem -like '*Server*' -and PrimaryGroupID -ne 516
+                    } -Properties OperatingSystem).DNSHostName
+                }
+                'Workstation' {
+                    $targets += (Get-ADComputer -Filter {
+                        OperatingSystem -notlike '*Server*' -and OperatingSystem -like '*Windows*'
+                    } -Properties OperatingSystem).DNSHostName
+                }
+            }
+        } catch {
+            Write-Warning "AD discovery failed for ${AssetType}: $_"
+        }
+    }
+
+    if (-not $targets -and $AssetType -eq 'DomainController' -and $FallbackHosts) {
+        $targets = $FallbackHosts
+    }
+
+    return @($targets | Where-Object { $_ } | Select-Object -Unique)
+}
+
 Export-ModuleMember -Function Get-ComplianceControls, Invoke-ComplianceScan, `
-    Get-ComplianceGaps, Get-ComplianceSummary, Format-ComplianceReport
+    Get-ComplianceGaps, Get-ComplianceSummary, Format-ComplianceReport, Get-AssetTargets
