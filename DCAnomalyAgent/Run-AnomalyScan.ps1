@@ -29,7 +29,7 @@ param(
     [string]$DomainControllerOverride,
     [switch]$JsonOutput,
     # Limit the compliance scan to specific asset types. Default: all configured types.
-    [ValidateSet('DomainController','MemberServer','Workstation')][string[]]$AssetType,
+    [ValidateSet('DomainController','MemberServer','Workstation','Linux')][string[]]$AssetType,
     # Override the target host list for compliance (comma-separated). Requires -AssetType
     # with a single value so the right controls are selected. Used by the web UI.
     [string]$TargetHostsOverride
@@ -156,7 +156,13 @@ if ($ComplianceScan -and $config.Compliance.Enabled) {
         $controls = Get-ComplianceControls @getControlsParams
 
         Write-ScanLog "[$at] Running $($controls.Count) control(s) across $(@($targets).Count) host(s)..."
-        $scanResults += Invoke-ComplianceScan -Targets $targets -Controls $controls -AssetType $at
+
+        # Linux (and any SSH-based) asset types carry a connection context for their checks
+        $invokeParams = @{ Targets = $targets; Controls = $controls; AssetType = $at }
+        if ($config.Assets[$at] -and $config.Assets[$at].Ssh) {
+            $invokeParams['Context'] = $config.Assets[$at].Ssh
+        }
+        $scanResults += Invoke-ComplianceScan @invokeParams
     }
 
     $gaps    = Get-ComplianceGaps -ScanResults $scanResults

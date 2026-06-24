@@ -8,11 +8,12 @@ it just runs a different set of controls per asset type.
 
 Each control declares which asset types it applies to via an `AppliesTo` array:
 
-| Asset type | Controls run | File |
-|---|---|---|
-| `DomainController` | Domain-wide + DC checks (password policy, DA membership, LDAP signing, AD Recycle Bin…) | `Config/compliance-frameworks.psd1` |
-| `MemberServer` | Host hardening (local admins, LAPS, RDP NLA, firewall, Defender, SMBv1, patching, services, log size) | `Config/compliance-endpoints.psd1` |
-| `Workstation` | Same host hardening **+ BitLocker** | `Config/compliance-endpoints.psd1` |
+| Asset type | Transport | Controls run | File |
+|---|---|---|---|
+| `DomainController` | WinRM | Domain-wide + DC checks (password policy, DA membership, LDAP signing, AD Recycle Bin…) | `Config/compliance-frameworks.psd1` |
+| `MemberServer` | WinRM | Host hardening (local admins, LAPS, RDP NLA, firewall, Defender, SMBv1, patching, services, log size) | `Config/compliance-endpoints.psd1` |
+| `Workstation` | WinRM | Same host hardening **+ BitLocker** | `Config/compliance-endpoints.psd1` |
+| `Linux` | **SSH** | SSH hardening, host firewall, auditd, SELinux/AppArmor, password aging, legacy services, patching | `Config/compliance-linux.psd1` |
 
 Controls shared across all Windows hosts (firewall, SMBv1, RDP NLA, patch age,
 log size) list multiple types in `AppliesTo`, so they run everywhere.
@@ -99,18 +100,80 @@ Append to `Config/compliance-endpoints.psd1` — no code changes needed:
 }
 ```
 
-## Non-Windows assets (Linux, network devices, appliances)
+## Linux / Unix assets (built-in, over SSH)
 
-This engine is WinRM/PowerShell-based, so it targets Windows only. For other
-asset classes, point a dedicated tool at them and feed results into the same
-SharePoint list / report if you want one pane of glass:
+Linux is a first-class asset type. The checks run over **SSH** using the Windows
+OpenSSH client (`ssh.exe`, included in Windows Server 2019+), with key-based,
+non-interactive auth.
+
+### Setup
+
+1. **Create an unprivileged scan user** on each Linux host (e.g. `svc-scan`) and
+   install the scanning server's public key in its `~/.ssh/authorized_keys`.
+2. **Generate a key pair** on the jump server and store the private key where the
+   gMSA can read it (referenced by `Assets.Linux.Ssh.KeyPath`):
+   ```powershell
+   ssh-keygen -t ed25519 -f C:\Apps\AD-Agent\DCAnomalyAgent\State\ssh\id_ed25519 -N '""'
+   ```
+3. The included controls favour world-readable config (`sshd -T`, `/etc/login.defs`)
+   so **root/sudo is not required**. If you add checks needing privilege, grant
+   `sudo NOPASSWD` for those specific read-only commands only.
+4. Configure hosts in `settings.psd1`:
+   ```powershell
+   Linux = @{
+       Hosts = @('web01.contoso.com','web02.contoso.com')
+       Ssh   = @{ User = 'svc-scan'; KeyPath = '...\State\ssh\id_ed25519'; Port = 22 }
+   }
+   ```
+
+### Run
+
+```powershell
+.\Run-AnomalyScan.ps1 -ComplianceScan -AssetType Linux
+.\Run-AnomalyScan.ps1 -ComplianceScan -AssetType Linux -TargetHostsOverride 'db01,db02'
+```
+
+### Controls included (CIS Distribution-Independent Linux subset)
+
+SSH PermitRootLogin / PasswordAuthentication, host firewall active
+(ufw/firewalld/nftables), auditd running, SELinux/AppArmor enforcing,
+PASS_MAX_DAYS, legacy services (telnet/rsh/ftp), pending security updates.
+Add your own in `Config/compliance-linux.psd1` (same pattern, `AppliesTo = @('Linux')`,
+Check receives `param($ComputerName, $Ctx)` with SSH details).
+
+## Other non-Windows assets (network devices, appliances, cloud)
+
+For asset classes this scanner can't reach directly, run a dedicated tool and feed
+results into the same SharePoint list / reports for one pane of glass:
 
 | Asset | Recommended approach |
 |---|---|
-| Linux/Unix | OpenSCAP with CIS/SCAP content, or Ansible CIS role |
 | Network (Cisco/Palo/etc.) | CIS-CAT Pro, or vendor posture tools |
 | Cloud (Azure/AWS) | Azure Policy / Defender for Cloud, AWS Config + Security Hub |
 | Cross-platform, authoritative | CIS-CAT Pro Assessor (covers Windows, Linux, network devices) |
 
-The PowerShell scanner here is best for Windows/AD; for a mixed estate, CIS-CAT
-Pro is the natural complement and can export to the same kinds of reports.
+## Asset discovery
+
+Don't hand-maintain host lists — discover them. `Run-Discovery.ps1` enumerates
+assets from AD and/or a network scan, classifies them by OS/role, and writes an
+inventory plus a ready-to-paste `Assets` snippet for `settings.psd1`.
+
+```powershell
+# From Active Directory (domain-joined hosts)
+.\Run-Discovery.ps1 -FromAD
+
+# Network scan — finds non-domain and Linux/appliance hosts too
+.\Run-Discovery.ps1 -Cidr '10.0.0.0/24','10.0.1.0/24'
+
+# Both, combined and de-duplicated
+.\Run-Discovery.ps1 -FromAD -Cidr '10.0.0.0/24'
+```
+
+Outputs (in the `State` folder): `asset-inventory.json`, `asset-inventory.csv`,
+and `discovered-assets.psd1.txt` (paste into `settings.psd1` → `Assets`).
+
+**Classification:** Windows (445/5985/135 open or AD OS = Windows), Linux (22 open,
+Windows ports closed), DomainController (LDAP+Kerberos+Windows, or AD PrimaryGroupID
+516), NetworkDevice (SNMP/telnet only). AD discovery refines Windows role into
+DomainController / MemberServer / Workstation. The network scan needs no agents but
+should be authorized — it's an active port probe across your ranges.

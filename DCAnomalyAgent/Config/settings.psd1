@@ -58,6 +58,7 @@
         FrameworkPath    = @(
             "$PSScriptRoot\compliance-frameworks.psd1"
             "$PSScriptRoot\compliance-endpoints.psd1"
+            "$PSScriptRoot\compliance-linux.psd1"
         )
         # Filter by framework name (e.g. 'CIS','NIST','ISO') or leave empty for all
         FrameworkFilter  = @()
@@ -84,6 +85,23 @@
             Hosts         = @()
             DiscoverFromAD = $false  # set $true to auto-enumerate client OS computers from AD
         }
+        Linux = @{
+            Hosts         = @('web01.contoso.com','web02.contoso.com')
+            DiscoverFromAD = $false  # most Linux hosts are found via network discovery, not AD
+            # SSH connection context for Linux checks. Uses the Windows OpenSSH client.
+            # Key-based, non-interactive auth; the key must be readable by the gMSA.
+            Ssh = @{
+                User    = 'svc-scan'
+                KeyPath = "$PSScriptRoot\..\State\ssh\id_ed25519"
+                Port    = 22
+            }
+        }
+    }
+
+    # Asset discovery (used by Run-Discovery.ps1 when no switches are passed)
+    Discovery = @{
+        FromAD  = $true
+        Subnets = @()   # e.g. @('10.0.0.0/24','10.0.1.0/24') for network scanning
     }
 
     LogPath = "$PSScriptRoot\..\State\scan.log"

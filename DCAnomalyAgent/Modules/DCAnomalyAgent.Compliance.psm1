@@ -64,7 +64,10 @@ function Invoke-ComplianceScan {
     param(
         [Parameter(Mandatory)][Alias('DomainControllers')][string[]]$Targets,
         [Parameter(Mandatory)][array]$Controls,
-        [string]$AssetType = 'DomainController'
+        [string]$AssetType = 'DomainController',
+        # Optional connection context passed as the 2nd arg to each control's Check
+        # scriptblock (e.g. SSH details for Linux: @{ User; KeyPath; Port }).
+        [hashtable]$Context
     )
 
     $results = @()
@@ -72,7 +75,7 @@ function Invoke-ComplianceScan {
     foreach ($target in $Targets) {
         foreach ($control in $Controls) {
             try {
-                $checkResult = & $control.Check $target
+                $checkResult = & $control.Check $target $Context
                 $results += [pscustomobject]@{
                     ControlId    = $control.Id
                     Title        = $control.Title
@@ -256,6 +259,13 @@ function Get-AssetTargets {
                 'Workstation' {
                     $targets += (Get-ADComputer -Filter {
                         OperatingSystem -notlike '*Server*' -and OperatingSystem -like '*Windows*'
+                    } -Properties OperatingSystem).DNSHostName
+                }
+                'Linux' {
+                    # Only domain-joined Linux hosts appear in AD; most are discovered
+                    # via the network scan (DCAnomalyAgent.Discovery) instead.
+                    $targets += (Get-ADComputer -Filter {
+                        OperatingSystem -like '*Linux*' -or OperatingSystem -like '*Unix*'
                     } -Properties OperatingSystem).DNSHostName
                 }
             }

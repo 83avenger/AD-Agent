@@ -43,6 +43,14 @@ Describe 'Get-ComplianceControls AssetTypeFilter' {
         foreach ($c in $controls) { $c.AppliesTo | Should -Contain 'MemberServer' }
     }
 
+    It 'returns only Linux-applicable controls from the linux file' {
+        $controls = Get-ComplianceControls `
+            -FrameworkPath "$PSScriptRoot\..\Config\compliance-linux.psd1" `
+            -AssetTypeFilter 'Linux'
+        $controls.Count | Should -BeGreaterThan 0
+        foreach ($c in $controls) { $c.AppliesTo | Should -Contain 'Linux' }
+    }
+
     It 'returns Workstation-only controls (e.g. BitLocker) when filtering Workstation' {
         $controls = Get-ComplianceControls `
             -FrameworkPath "$PSScriptRoot\..\Config\compliance-endpoints.psd1" `
