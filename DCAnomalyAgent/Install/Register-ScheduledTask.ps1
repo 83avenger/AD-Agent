@@ -45,3 +45,15 @@ Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $triggers `
     -Principal $principal -Settings $settings -Description 'Runs DC Anomaly Agent scan under gMSA identity'
 
 Write-Host "Scheduled task '$TaskName' registered to run at: $($TriggerTimes -join ', ') under $GmsaAccount"
+
+# ── Compliance scan task (runs once daily, separate from anomaly scan) ────────
+$complianceAction = New-ScheduledTaskAction -Execute 'powershell.exe' `
+    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`" -ComplianceScan"
+
+$complianceTrigger = New-ScheduledTaskTrigger -Daily -At '07:00'
+
+Register-ScheduledTask -TaskName "$TaskName-Compliance" -Action $complianceAction `
+    -Trigger $complianceTrigger -Principal $principal -Settings $settings `
+    -Description 'Runs DC Anomaly Agent compliance scan (NIST/CIS/ISO) under gMSA identity'
+
+Write-Host "Compliance task '$TaskName-Compliance' registered to run daily at 07:00 under $GmsaAccount"

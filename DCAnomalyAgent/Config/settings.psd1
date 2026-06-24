@@ -43,10 +43,23 @@
             # running gMSA's accessible certificate store). No secrets stored here.
             CertificateThumbprint = 'REPLACE_ME'
             SiteId   = 'REPLACE_ME'
-            ListId   = 'REPLACE_ME'
+            ListId   = 'REPLACE_ME'   # Anomaly events list
+            ComplianceListId = 'REPLACE_ME'  # Compliance gap items list (separate list)
             # When false, only anomalies are written; when true, every scan run is logged.
             LogEveryScan = $false
         }
+    }
+
+    # Compliance scanning
+    Compliance = @{
+        Enabled          = $true
+        FrameworkPath    = "$PSScriptRoot\compliance-frameworks.psd1"
+        # Filter by framework name (e.g. 'CIS','NIST','ISO') or leave empty for all
+        FrameworkFilter  = @()
+        # Filter by severity or leave empty for all: 'Critical','High','Medium','Low'
+        SeverityFilter   = @()
+        # Path where the full markdown report is saved locally after each scan
+        ReportOutputPath = "$PSScriptRoot\..\State\compliance-report.md"
     }
 
     LogPath = "$PSScriptRoot\..\State\scan.log"

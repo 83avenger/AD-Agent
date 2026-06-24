@@ -112,4 +112,98 @@ function Write-SharePointListItem {
     }
 }
 
-Export-ModuleMember -Function Send-TeamsAlert, Write-SharePointListItem, Get-GraphAccessToken
+function Send-TeamsComplianceReport {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$WebhookUrl,
+        [Parameter(Mandatory)][pscustomobject]$Summary,
+        [Parameter(Mandatory)][array]$Gaps
+    )
+
+    $severityIcon = @{ Critical = '🔴'; High = '🟠'; Medium = '🟡'; Low = '🔵' }
+    $topGaps = $Gaps | Sort-Object @{
+        e = { @{ Critical = 0; High = 1; Medium = 2; Low = 3 }[$_.Severity] }
+    } | Select-Object -First 10
+
+    $facts = $topGaps | ForEach-Object {
+        @{
+            title = "$($severityIcon[$_.Severity]) [$($_.Severity)] $($_.ControlId) — $($_.Title)"
+            value = "DC: $($_.ComputerName) | Actual: $($_.Actual)"
+        }
+    }
+
+    if ($Gaps.Count -gt 10) {
+        $facts += @{ title = '...'; value = "$($Gaps.Count - 10) more gap(s) in SharePoint report." }
+    }
+
+    $color = if ($Summary.ScorePct -ge 80) { '5CB85C' } elseif ($Summary.ScorePct -ge 60) { 'F0AD4E' } else { 'D9534F' }
+
+    $card = @{
+        '@type'    = 'MessageCard'
+        '@context' = 'http://schema.org/extensions'
+        summary    = "Compliance Scan: $($Summary.ScorePct)% ($($Summary.Failed) gap(s))"
+        themeColor = $color
+        title      = "DC Compliance Report — $($Summary.ScorePct)% passing ($($Summary.Passed)/$($Summary.TotalControls) controls)"
+        sections   = @(
+            @{
+                activityTitle = "Gaps by severity: $(($Summary.GapsBySeverity | ForEach-Object { "$($_.Severity): $($_.GapCount)" }) -join ' | ')"
+                facts         = $facts
+            }
+        )
+    }
+
+    try {
+        Invoke-RestMethod -Uri $WebhookUrl -Method Post -Body ($card | ConvertTo-Json -Depth 8) -ContentType 'application/json'
+    } catch {
+        Write-Warning "Failed to send Teams compliance report: $_"
+    }
+}
+
+function Write-SharePointComplianceItems {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$SharePointConfig,
+        [Parameter(Mandatory)][array]$Gaps,
+        [datetime]$ScanTime = (Get-Date),
+        [string]$ListId
+    )
+
+    if (-not $Gaps -or $Gaps.Count -eq 0) { return }
+
+    $targetListId = if ($ListId) { $ListId } else { $SharePointConfig.ComplianceListId }
+    if (-not $targetListId) {
+        Write-Warning "No SharePoint list ID configured for compliance items (set SharePointConfig.ComplianceListId)."
+        return
+    }
+
+    try {
+        $token = Get-GraphAccessToken -TenantId $SharePointConfig.TenantId -ClientId $SharePointConfig.ClientId `
+            -CertificateThumbprint $SharePointConfig.CertificateThumbprint
+
+        $headers = @{ Authorization = "Bearer $token"; 'Content-Type' = 'application/json' }
+        $uri = "https://graph.microsoft.com/v1.0/sites/$($SharePointConfig.SiteId)/lists/$targetListId/items"
+
+        foreach ($gap in $Gaps) {
+            $frameworkLabels = ($gap.Frameworks.GetEnumerator() | ForEach-Object { "$($_.Key): $($_.Value)" }) -join '; '
+            $body = @{
+                fields = @{
+                    Title        = "$($gap.ControlId) — $($gap.Title)"
+                    Severity     = $gap.Severity
+                    Frameworks   = $frameworkLabels
+                    ComputerName = $gap.ComputerName
+                    Actual       = $gap.Actual
+                    Expected     = $gap.Expected
+                    Remediation  = $gap.Remediation
+                    ScanTime     = $ScanTime.ToString('o')
+                }
+            } | ConvertTo-Json -Depth 5
+
+            Invoke-RestMethod -Uri $uri -Method Post -Headers $headers -Body $body | Out-Null
+        }
+    } catch {
+        Write-Warning "Failed to write compliance items to SharePoint: $_"
+    }
+}
+
+Export-ModuleMember -Function Send-TeamsAlert, Write-SharePointListItem, Get-GraphAccessToken, `
+    Send-TeamsComplianceReport, Write-SharePointComplianceItems
