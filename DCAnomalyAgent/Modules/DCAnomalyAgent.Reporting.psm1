@@ -205,5 +205,181 @@ function Write-SharePointComplianceItems {
     }
 }
 
+
+# ─── Email helpers ────────────────────────────────────────────────────────────
+
+function _Get-EmailCredential {
+    param([hashtable]$EmailConfig)
+    if (-not $EmailConfig.CredentialUser) { return $null }
+    $securePass = if ($EmailConfig.CredentialPassword) {
+        $EmailConfig.CredentialPassword | ConvertTo-SecureString
+    } else {
+        New-Object System.Security.SecureString
+    }
+    return New-Object System.Management.Automation.PSCredential($EmailConfig.CredentialUser, $securePass)
+}
+
+function _Build-HtmlTable {
+    param([array]$Rows, [string[]]$Columns)
+    $sb = [System.Text.StringBuilder]::new()
+    [void]$sb.Append('<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:13px">')
+    [void]$sb.Append('<tr style="background:#1e3a5f;color:#fff">')
+    foreach ($col in $Columns) { [void]$sb.Append("<th>$col</th>") }
+    [void]$sb.Append('</tr>')
+    $alt = $false
+    foreach ($row in $Rows) {
+        $bg = if ($alt) { '#f4f4f4' } else { '#ffffff' }
+        [void]$sb.Append("<tr style=`"background:$bg`">")
+        foreach ($col in $Columns) { [void]$sb.Append("<td>$([System.Net.WebUtility]::HtmlEncode($row.$col))</td>") }
+        [void]$sb.Append('</tr>')
+        $alt = -not $alt
+    }
+    [void]$sb.Append('</table>')
+    return $sb.ToString()
+}
+
+$_SeverityOrder = @{ Critical = 0; High = 1; Medium = 2; Low = 3 }
+
+function Send-EmailAlert {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$EmailConfig,
+        [Parameter(Mandatory)][array]$Anomalies
+    )
+
+    if (-not $EmailConfig.Enabled -or -not $Anomalies) { return }
+
+    try {
+        $filtered = if ($EmailConfig.MinSeverity) {
+            $minRank = $_SeverityOrder[$EmailConfig.MinSeverity]
+            $Anomalies | Where-Object { ($_SeverityOrder[$_.Severity] -le $minRank) -or (-not $_.Severity) }
+        } else { $Anomalies }
+
+        if (-not $filtered -and -not $EmailConfig.SendOnNoFindings) { return }
+
+        $table  = _Build-HtmlTable -Rows $filtered -Columns @('Type','Account','ComputerName','TimeCreated','Detail')
+        $body   = "<h2>Domain Controller Anomaly Alert — $($Anomalies.Count) finding(s)</h2>$table"
+        $cred   = _Get-EmailCredential -EmailConfig $EmailConfig
+
+        $params = @{
+            To         = $EmailConfig.To
+            From       = $EmailConfig.From
+            Subject    = "[AD-Agent] Anomaly Alert — $($Anomalies.Count) finding(s) — $(Get-Date -Format 'yyyy-MM-dd HH:mm')"
+            Body       = $body
+            BodyAsHtml = $true
+            SmtpServer = $EmailConfig.SmtpServer
+            Port       = $EmailConfig.Port
+            UseSsl     = $EmailConfig.UseSsl
+        }
+        if ($cred) { $params['Credential'] = $cred }
+        Send-MailMessage @params
+    } catch {
+        Write-Warning "Failed to send email alert: $_"
+    }
+}
+
+function Send-EmailComplianceReport {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$EmailConfig,
+        [Parameter(Mandatory)][pscustomobject]$Summary,
+        [Parameter(Mandatory)][array]$Gaps
+    )
+
+    if (-not $EmailConfig.Enabled) { return }
+    if ($Gaps.Count -eq 0 -and -not $EmailConfig.SendOnNoFindings) { return }
+
+    try {
+        $scoreColor = if ($Summary.ScorePct -ge 80) { '#27ae60' } elseif ($Summary.ScorePct -ge 60) { '#f39c12' } else { '#c0392b' }
+        $scoreCard  = "<p style=`"font-size:20px`">Compliance Score: <strong style=`"color:$scoreColor`">$($Summary.ScorePct)%</strong> &nbsp; ($($Summary.Passed)/$($Summary.TotalControls) controls passing, $($Gaps.Count) gap(s))</p>"
+
+        $topGaps   = $Gaps | Sort-Object { $_SeverityOrder[$_.Severity] } | Select-Object -First 20
+        $table     = _Build-HtmlTable -Rows $topGaps -Columns @('Severity','ControlId','Title','ComputerName','Actual','Remediation')
+        $body      = "<h2>Compliance Scan Report — $(Get-Date -Format 'yyyy-MM-dd')</h2>$scoreCard$table"
+        $cred      = _Get-EmailCredential -EmailConfig $EmailConfig
+
+        $params = @{
+            To         = $EmailConfig.To
+            From       = $EmailConfig.From
+            Subject    = "[AD-Agent] Compliance Report — $($Summary.ScorePct)% — $(Get-Date -Format 'yyyy-MM-dd')"
+            Body       = $body
+            BodyAsHtml = $true
+            SmtpServer = $EmailConfig.SmtpServer
+            Port       = $EmailConfig.Port
+            UseSsl     = $EmailConfig.UseSsl
+        }
+        if ($cred) { $params['Credential'] = $cred }
+        Send-MailMessage @params
+    } catch {
+        Write-Warning "Failed to send email compliance report: $_"
+    }
+}
+
+function Send-TeamsZeroDayAlert {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$WebhookUrl,
+        [Parameter(Mandatory)][array]$ZeroDays
+    )
+
+    if (-not $ZeroDays -or $ZeroDays.Count -eq 0) { return }
+
+    $facts = $ZeroDays | ForEach-Object {
+        $ransomTag = if ($_.KnownRansomwareCampaignUse -eq 'Known') { ' [RANSOMWARE]' } else { '' }
+        @{
+            title = "$($_.CveId)$ransomTag — $($_.VulnerabilityName)"
+            value = "Product: $($_.VendorProject) / $($_.Product) | Added: $($_.DateAdded) | Due: $($_.DueDate) | $($_.RequiredAction)"
+        }
+    }
+
+    $card = @{
+        '@type'    = 'MessageCard'
+        '@context' = 'http://schema.org/extensions'
+        summary    = "Zero-Day Alert: $($ZeroDays.Count) new CVE(s) match your environment"
+        themeColor = 'C0392B'
+        title      = "Zero-Day Alert — $($ZeroDays.Count) new CVE(s) match your environment"
+        sections   = @(@{ activityTitle = 'Newly added to CISA KEV / NVD'; facts = $facts })
+    }
+
+    try {
+        Invoke-RestMethod -Uri $WebhookUrl -Method Post -Body ($card | ConvertTo-Json -Depth 8) -ContentType 'application/json'
+    } catch {
+        Write-Warning "Failed to send Teams zero-day alert: $_"
+    }
+}
+
+function Send-EmailZeroDayAlert {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$EmailConfig,
+        [Parameter(Mandatory)][array]$ZeroDays
+    )
+
+    if (-not $EmailConfig.Enabled -or -not $ZeroDays) { return }
+
+    try {
+        $table  = _Build-HtmlTable -Rows $ZeroDays -Columns @('CveId','VendorProject','Product','VulnerabilityName','DateAdded','DueDate','KnownRansomwareCampaignUse','RequiredAction')
+        $body   = "<h2 style=`"color:#c0392b`">Zero-Day Alert — $($ZeroDays.Count) new CVE(s) match your environment</h2>$table"
+        $cred   = _Get-EmailCredential -EmailConfig $EmailConfig
+
+        $params = @{
+            To         = $EmailConfig.To
+            From       = $EmailConfig.From
+            Subject    = "[AD-Agent] Zero-Day Alert — $($ZeroDays.Count) new CVE(s) — $(Get-Date -Format 'yyyy-MM-dd')"
+            Body       = $body
+            BodyAsHtml = $true
+            SmtpServer = $EmailConfig.SmtpServer
+            Port       = $EmailConfig.Port
+            UseSsl     = $EmailConfig.UseSsl
+        }
+        if ($cred) { $params['Credential'] = $cred }
+        Send-MailMessage @params
+    } catch {
+        Write-Warning "Failed to send email zero-day alert: $_"
+    }
+}
+
 Export-ModuleMember -Function Send-TeamsAlert, Write-SharePointListItem, Get-GraphAccessToken, `
-    Send-TeamsComplianceReport, Write-SharePointComplianceItems
+    Send-TeamsComplianceReport, Write-SharePointComplianceItems, `
+    Send-EmailAlert, Send-EmailComplianceReport, `
+    Send-TeamsZeroDayAlert, Send-EmailZeroDayAlert

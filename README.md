@@ -12,7 +12,8 @@ A PowerShell-based security monitoring and compliance platform for Active Direct
 | UEBA baseline | Per-user rolling logon-hour range, source host, and DC profiles; flags deviations after cold-start guard |
 | Compliance scanning | CIS Benchmarks, NIST SP 800-53, ISO 27001 Annex A across DCs, member servers, workstations, and Linux hosts |
 | Asset discovery | AD enumeration + TCP CIDR sweep; classifies and merges into a unified inventory |
-| Reporting | Teams Adaptive Card alerts, SharePoint list items (Graph API), local markdown report, PDF/CSV download via web UI |
+| Reporting | Teams Adaptive Card alerts, SharePoint list items (Graph API), **email (SMTP)**, local markdown report, PDF/CSV download via web UI |
+| Zero-day telemetry | Pulls CISA KEV catalog + NVD daily; alerts on newly-added CVEs matching your product watch list; deduplicates so each CVE fires only once |
 | Web UI | Flask app — choose scan type, frameworks, severities, target hosts; download PDF or CSV reports |
 
 ---
@@ -35,14 +36,19 @@ AD-Agent/
 │   │   ├── DCAnomalyAgent.Baseline.psm1     # UEBA rolling baseline (JSON)
 │   │   ├── DCAnomalyAgent.Reporting.psm1    # Teams + SharePoint output
 │   │   ├── DCAnomalyAgent.Compliance.psm1   # Compliance engine
-│   │   └── DCAnomalyAgent.Discovery.psm1    # Asset discovery (AD + network)
+│   │   ├── DCAnomalyAgent.Discovery.psm1    # Asset discovery (AD + network)
+│   │   └── DCAnomalyAgent.ZeroDay.psm1      # CISA KEV + NVD zero-day telemetry
+│   ├── Config/
+│   │   └── zeroday-products.psd1        # Vendor/product watch list for zero-day alerts
 │   ├── Install/
-│   │   └── Register-ScheduledTask.ps1   # Registers gMSA-run Scheduled Tasks
+│   │   └── Register-ScheduledTask.ps1   # Registers gMSA-run Scheduled Tasks (incl. zero-day)
 │   ├── Tests/
 │   │   ├── Detectors.Tests.ps1
 │   │   ├── Baseline.Tests.ps1
 │   │   ├── Compliance.Tests.ps1
-│   │   └── Discovery.Tests.ps1
+│   │   ├── Discovery.Tests.ps1
+│   │   ├── ZeroDay.Tests.ps1
+│   │   └── Reporting.Email.Tests.ps1
 │   ├── State/                        # Runtime state (gitignored)
 │   ├── README.md                     # Scanner module reference
 │   └── COMPLIANCE-OTHER-ASSETS.md   # Guide for member servers, workstations, Linux
@@ -149,6 +155,75 @@ All three frameworks are tagged on every control — filter by framework or seve
 
 ---
 
+## Email notifications
+
+Enable SMTP email alerts alongside Teams by setting `Reporting.Email.Enabled = $true` in `Config/settings.psd1`:
+
+```powershell
+Email = @{
+    Enabled    = $true
+    To         = @('security-team@contoso.com')
+    From       = 'dcagent@contoso.com'
+    SmtpServer = 'smtp.contoso.com'
+    Port       = 587
+    UseSsl     = $true
+    # Leave CredentialUser empty for unauthenticated SMTP relay
+    CredentialUser     = ''
+    CredentialPassword = ''   # ConvertFrom-SecureString export if auth needed
+    MinSeverity        = 'High'
+    SendOnNoFindings   = $false
+}
+```
+
+Verify SMTP config without running a real scan:
+
+```powershell
+.\Run-AnomalyScan.ps1 -TestEmail
+```
+
+Three email functions fire automatically at the same points as Teams:
+- Anomaly findings → alert email with findings table
+- Compliance scan → scorecard + top-gap table
+- Zero-day new CVEs → CVE list with product, due date, ransomware flag
+
+---
+
+## Zero-day telemetry
+
+The zero-day module pulls the **CISA Known Exploited Vulnerabilities (KEV)** catalog (and optionally **NVD CVE API**) daily, cross-references against your product watch list, and alerts only on CVEs **newly added since the last run** — no repeat noise.
+
+### Configure watched products (`Config/zeroday-products.psd1`)
+
+```powershell
+@{
+    Products  = @('Microsoft Windows','Windows Server','Microsoft Active Directory','Kerberos')
+    NvdApiKey = ''      # optional free key: nvd.nist.gov/developers/request-an-api-key
+    MaxAgeDays = 30     # only surface entries added within N days (0 = all-time)
+}
+```
+
+### Run
+
+```powershell
+# Zero-day scan only (dry run — no Teams/email, prints to console)
+.\Run-AnomalyScan.ps1 -ZeroDayScan -DryRun
+
+# Combined anomaly + zero-day scan
+.\Run-AnomalyScan.ps1 -ZeroDayScan
+```
+
+Zero-day scanning also runs automatically when `ZeroDay.Enabled = $true` in settings (default).
+
+### Air-gapped environments
+
+Set `ZeroDay.Offline = $true` in settings. Pre-download the KEV JSON on an internet-connected machine and copy it to `State\kev-cache.json` on the jump server:
+
+```
+https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json
+```
+
+---
+
 ## Scheduling
 
 ```powershell
@@ -162,6 +237,7 @@ Creates two Scheduled Tasks under the gMSA:
 |---|---|---|
 | `DCAnomalyAgent-Scan` | 06:00, 14:00, 22:00 | Anomaly scan only |
 | `DCAnomalyAgent-Scan-Compliance` | Daily 07:00 | Anomaly + full compliance scan |
+| `DCAnomalyAgent-Scan-ZeroDay` | Daily 08:00 | CISA KEV + NVD zero-day feed pull |
 
 ---
 

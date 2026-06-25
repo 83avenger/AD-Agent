@@ -57,3 +57,15 @@ Register-ScheduledTask -TaskName "$TaskName-Compliance" -Action $complianceActio
     -Description 'Runs DC Anomaly Agent compliance scan (NIST/CIS/ISO) under gMSA identity'
 
 Write-Host "Compliance task '$TaskName-Compliance' registered to run daily at 07:00 under $GmsaAccount"
+
+# ── Zero-day telemetry task (runs once daily) ─────────────────────────────────
+$zeroDayAction = New-ScheduledTaskAction -Execute 'powershell.exe' `
+    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`" -ZeroDayScan"
+
+$zeroDayTrigger = New-ScheduledTaskTrigger -Daily -At '08:00'
+
+Register-ScheduledTask -TaskName "$TaskName-ZeroDay" -Action $zeroDayAction `
+    -Trigger $zeroDayTrigger -Principal $principal -Settings $settings `
+    -Description 'Pulls CISA KEV and NVD feeds and alerts on newly-added CVEs matching the watched product list'
+
+Write-Host "Zero-day task '$TaskName-ZeroDay' registered to run daily at 08:00 under $GmsaAccount"

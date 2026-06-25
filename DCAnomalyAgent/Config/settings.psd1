@@ -35,6 +35,25 @@
             Enabled    = $true
             WebhookUrl = 'https://contoso.webhook.office.com/REPLACE_ME'
         }
+        Email = @{
+            Enabled           = $false
+            To                = @('security-team@contoso.com')
+            From              = 'dcagent@contoso.com'
+            SmtpServer        = 'smtp.contoso.com'
+            Port              = 587
+            UseSsl            = $true
+            # Leave CredentialUser empty to use an unauthenticated SMTP relay.
+            # If auth is required, set CredentialUser and store the password as a
+            # ConvertFrom-SecureString export (run once interactively as the gMSA):
+            #   Read-Host -AsSecureString | ConvertFrom-SecureString
+            # Paste the resulting string into CredentialPassword.
+            CredentialUser     = ''
+            CredentialPassword = ''
+            # Minimum severity level to include in the email body (Critical/High/Medium/Low).
+            MinSeverity        = 'High'
+            # Set $true to send a summary email even when there are no findings.
+            SendOnNoFindings   = $false
+        }
         SharePoint = @{
             Enabled  = $true
             TenantId = '00000000-0000-0000-0000-000000000000'
@@ -102,6 +121,21 @@
     Discovery = @{
         FromAD  = $true
         Subnets = @()   # e.g. @('10.0.0.0/24','10.0.1.0/24') for network scanning
+    }
+
+    # Zero-day / CVE telemetry
+    # Pulls the CISA Known Exploited Vulnerabilities (KEV) catalog daily and optionally
+    # queries NVD for additional coverage. Alerts only on CVEs newly added since the last run.
+    ZeroDay = @{
+        Enabled          = $true
+        # Set $true on air-gapped servers — reads State\kev-cache.json instead of fetching live.
+        Offline          = $false
+        ProductsPath     = "$PSScriptRoot\zeroday-products.psd1"
+        CacheDir         = "$PSScriptRoot\..\State"
+        # Alert when a new KEV entry matches a watched product.
+        AlertOnNew       = $true
+        # Also alert if a matching KEV entry has a CISA due date within N days (0 = disabled).
+        AlertDueDateDays = 7
     }
 
     LogPath = "$PSScriptRoot\..\State\scan.log"

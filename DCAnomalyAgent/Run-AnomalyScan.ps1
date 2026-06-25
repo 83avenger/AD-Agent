@@ -2,13 +2,18 @@
 <#
 .SYNOPSIS
     Scans configured Domain Controllers for security anomalies and (optionally) compliance
-    gaps against NIST CSF, ISO 27001, and CIS Benchmarks. Reports to Teams and SharePoint.
+    gaps against NIST CSF, ISO 27001, and CIS Benchmarks. Reports to Teams, SharePoint, and email.
 .PARAMETER DryRun
-    Skip Teams/SharePoint writes; print all findings to the console instead.
+    Skip Teams/SharePoint/email writes; print all findings to the console instead.
 .PARAMETER ComplianceScan
     Run the compliance framework scan in addition to the regular anomaly scan.
     By default only the anomaly scan runs (suitable for the 3x/day schedule).
     Run compliance scan less frequently (e.g. daily/weekly) to reduce DC load.
+.PARAMETER ZeroDayScan
+    Pull the CISA KEV catalog (and optionally NVD) and alert on newly-added CVEs that
+    match the product watch list in Config/zeroday-products.psd1.
+.PARAMETER TestEmail
+    Send a synthetic test email to verify SMTP configuration without running a real scan.
 .PARAMETER FrameworkFilter
     Optionally limit compliance check to one or more frameworks: CIS, NIST, ISO.
 .PARAMETER SeverityFilter
@@ -24,6 +29,8 @@ param(
     [string]$ConfigPath = "$PSScriptRoot\Config\settings.psd1",
     [switch]$DryRun,
     [switch]$ComplianceScan,
+    [switch]$ZeroDayScan,
+    [switch]$TestEmail,
     [string[]]$FrameworkFilter,
     [ValidateSet('Critical','High','Medium','Low')][string[]]$SeverityFilter,
     [string]$DomainControllerOverride,
@@ -44,9 +51,19 @@ Import-Module "$PSScriptRoot\Modules\DCAnomalyAgent.Reporting.psm1" -Force
 if ($ComplianceScan) {
     Import-Module "$PSScriptRoot\Modules\DCAnomalyAgent.Compliance.psm1" -Force
 }
+if ($ZeroDayScan -or ($config -and $config.ZeroDay -and $config.ZeroDay.Enabled)) {
+    Import-Module "$PSScriptRoot\Modules\DCAnomalyAgent.ZeroDay.psm1" -Force
+}
 
 $config = Import-PowerShellDataFile -Path $ConfigPath
 $scanTime = Get-Date
+
+# Re-check after config is loaded
+if (-not (Get-Module DCAnomalyAgent.ZeroDay -ErrorAction SilentlyContinue)) {
+    if ($ZeroDayScan -or ($config.ZeroDay -and $config.ZeroDay.Enabled)) {
+        Import-Module "$PSScriptRoot\Modules\DCAnomalyAgent.ZeroDay.psm1" -Force
+    }
+}
 
 if ($DomainControllerOverride) {
     $config = $config.Clone()
@@ -60,6 +77,24 @@ function Write-ScanLog {
     $logDir = Split-Path -Path $config.LogPath -Parent
     if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
     Add-Content -Path $config.LogPath -Value $line
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TEST EMAIL (smoke test only — exits after sending)
+# ─────────────────────────────────────────────────────────────────────────────
+if ($TestEmail) {
+    $testAnomaly = [pscustomobject]@{
+        Type        = 'TestAlert'
+        Account     = 'test-account'
+        ComputerName = 'dc01.contoso.com'
+        TimeCreated = Get-Date
+        Detail      = 'This is a test alert sent by Run-AnomalyScan.ps1 -TestEmail to verify SMTP configuration.'
+        Severity    = 'Low'
+    }
+    Write-Host "Sending test email to: $($config.Reporting.Email.To -join ', ')"
+    Send-EmailAlert -EmailConfig $config.Reporting.Email -Anomalies @($testAnomaly)
+    Write-Host "Test email sent (check inbox and spam folder)."
+    return
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -115,12 +150,16 @@ if ($DryRun) {
     $allAnomalies | Format-Table -AutoSize
 }
 
-if (-not $DryRun -and $config.Reporting.Teams.Enabled -and $allAnomalies.Count -gt 0) {
-    Send-TeamsAlert -WebhookUrl $config.Reporting.Teams.WebhookUrl -Anomalies $allAnomalies
-}
-
-if (-not $DryRun -and $config.Reporting.SharePoint.Enabled -and $allAnomalies.Count -gt 0) {
-    Write-SharePointListItem -SharePointConfig $config.Reporting.SharePoint -Anomalies $allAnomalies
+if (-not $DryRun -and $allAnomalies.Count -gt 0) {
+    if ($config.Reporting.Teams.Enabled) {
+        Send-TeamsAlert -WebhookUrl $config.Reporting.Teams.WebhookUrl -Anomalies $allAnomalies
+    }
+    if ($config.Reporting.SharePoint.Enabled) {
+        Write-SharePointListItem -SharePointConfig $config.Reporting.SharePoint -Anomalies $allAnomalies
+    }
+    if ($config.Reporting.Email.Enabled) {
+        Send-EmailAlert -EmailConfig $config.Reporting.Email -Anomalies $allAnomalies
+    }
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -190,18 +229,63 @@ if ($ComplianceScan -and $config.Compliance.Enabled) {
             Write-SharePointComplianceItems -SharePointConfig $config.Reporting.SharePoint `
                 -Gaps $gaps -ScanTime $scanTime
         }
+        if ($config.Reporting.Email.Enabled) {
+            Send-EmailComplianceReport -EmailConfig $config.Reporting.Email `
+                -Summary $summary -Gaps $gaps
+        }
     }
 
     if ($JsonOutput) {
         @{
-            ScanTime        = $scanTime.ToString('o')
-            Anomalies       = $allAnomalies
-            ComplianceGaps  = $gaps
+            ScanTime          = $scanTime.ToString('o')
+            Anomalies         = $allAnomalies
+            ComplianceGaps    = $gaps
             ComplianceSummary = $summary
         } | ConvertTo-Json -Depth 8
         return
     }
     return [pscustomobject]@{ Anomalies = $allAnomalies; ComplianceGaps = $gaps; Summary = $summary }
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ZERO-DAY SCAN
+# ─────────────────────────────────────────────────────────────────────────────
+$runZeroDay = $ZeroDayScan -or ($config.ZeroDay -and $config.ZeroDay.Enabled -and $config.ZeroDay.AlertOnNew)
+if ($runZeroDay) {
+    Write-ScanLog "Starting zero-day telemetry scan..."
+
+    try {
+        $zdMatches   = Get-ZeroDayMatches -Config $config.ZeroDay
+        $newZeroDays = Update-ZeroDayBaseline -Matches $zdMatches -CacheDir $config.ZeroDay.CacheDir
+
+        # Also surface any entries whose CISA due date falls within the configured window
+        if ($config.ZeroDay.AlertDueDateDays -gt 0) {
+            $dueSoon = $zdMatches | Where-Object {
+                $_.DueDate -and ([datetime]$_.DueDate - (Get-Date)).TotalDays -le $config.ZeroDay.AlertDueDateDays `
+                    -and ([datetime]$_.DueDate - (Get-Date)).TotalDays -ge 0
+            }
+            # Merge without duplicates
+            $existingIds  = $newZeroDays | Select-Object -ExpandProperty CveId
+            $newZeroDays += $dueSoon | Where-Object { $_.CveId -notin $existingIds }
+        }
+
+        Write-ScanLog "Zero-day scan complete: $($zdMatches.Count) total match(es), $($newZeroDays.Count) new/due-soon alert(s)."
+
+        if ($DryRun) {
+            Write-Host "`n=== ZERO-DAY MATCHES (new/due-soon) ==="
+            $newZeroDays | Select-Object CveId, VendorProject, Product, DateAdded, DueDate, KnownRansomwareCampaignUse |
+                Format-Table -AutoSize
+        } elseif ($newZeroDays.Count -gt 0) {
+            if ($config.Reporting.Teams.Enabled) {
+                Send-TeamsZeroDayAlert -WebhookUrl $config.Reporting.Teams.WebhookUrl -ZeroDays $newZeroDays
+            }
+            if ($config.Reporting.Email.Enabled) {
+                Send-EmailZeroDayAlert -EmailConfig $config.Reporting.Email -ZeroDays $newZeroDays
+            }
+        }
+    } catch {
+        Write-ScanLog "ERROR (zero-day scan): $_"
+    }
 }
 
 if ($JsonOutput) {
