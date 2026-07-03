@@ -1,6 +1,17 @@
 # AD-Agent
 
-A PowerShell-based security monitoring and compliance platform for Active Directory environments. Runs 2–3 times per day against Domain Controllers via WinRM, detects anomalies and compliance gaps, and reports findings to Microsoft Teams and SharePoint. Includes a web UI for on-demand scans and PDF/CSV report generation.
+A one-stop security services platform for Windows/AD environments, built in PowerShell. From a single jump server and a single gMSA it delivers anomaly detection, multi-framework compliance scanning (CIS, NIST, ISO 27001, HIPAA, OWASP), web application posture checks, asset discovery, and zero-day telemetry — with unified reporting to Microsoft Teams, SharePoint, and email, plus a web UI for on-demand scans and PDF/CSV reports.
+
+## Security services at a glance
+
+| Service | What it covers | Entry point |
+|---|---|---|
+| Threat detection | Failed-logon bursts, lockouts, privileged group changes, GPO drift, UEBA deviations | `Run-AnomalyScan.ps1` |
+| Infrastructure compliance | CIS / NIST / ISO / HIPAA controls on DCs, servers, workstations, Linux | `Run-AnomalyScan.ps1 -ComplianceScan` |
+| Web application posture | OWASP Top 10 header/TLS/cookie checks on HTTPS endpoints | `Run-AnomalyScan.ps1 -ComplianceScan -AssetType WebApplication` |
+| Vulnerability intelligence | CISA KEV + NVD zero-day feed, deduplicated alerts | `Run-AnomalyScan.ps1 -ZeroDayScan` |
+| Asset inventory | AD + network discovery and classification | `Run-Discovery.ps1` |
+| Reporting & alerting | Teams, SharePoint, email, markdown, PDF/CSV | automatic / web UI |
 
 ---
 
@@ -10,7 +21,7 @@ A PowerShell-based security monitoring and compliance platform for Active Direct
 |---|---|
 | Anomaly detection | Failed logon bursts, account lockouts, privileged group changes, new accounts elevated to DA within X hours, GPO version drift |
 | UEBA baseline | Per-user rolling logon-hour range, source host, and DC profiles; flags deviations after cold-start guard |
-| Compliance scanning | CIS Benchmarks, NIST SP 800-53, ISO 27001 Annex A across DCs, member servers, workstations, and Linux hosts |
+| Compliance scanning | CIS Benchmarks, NIST SP 800-53, ISO 27001 Annex A, HIPAA Security Rule, and OWASP Top 10 across DCs, member servers, workstations, Linux hosts, and web applications |
 | Asset discovery | AD enumeration + TCP CIDR sweep; classifies and merges into a unified inventory |
 | Reporting | Teams Adaptive Card alerts, SharePoint list items (Graph API), **email (SMTP)**, local markdown report, PDF/CSV download via web UI |
 | Zero-day telemetry | Pulls CISA KEV catalog + NVD daily; alerts on newly-added CVEs matching your product watch list; deduplicates so each CVE fires only once |
@@ -29,7 +40,9 @@ AD-Agent/
 │   │   ├── settings.psd1            # All configuration (no secrets)
 │   │   ├── compliance-frameworks.psd1   # DC/domain controls (CIS/NIST/ISO)
 │   │   ├── compliance-endpoints.psd1    # Windows host controls (servers/workstations)
-│   │   └── compliance-linux.psd1        # Linux/SSH controls
+│   │   ├── compliance-linux.psd1        # Linux/SSH controls
+│   │   ├── compliance-hipaa.psd1        # HIPAA Security Rule technical safeguards
+│   │   └── compliance-owasp.psd1        # OWASP Top 10 web application posture checks
 │   ├── Modules/
 │   │   ├── DCAnomalyAgent.Collectors.psm1   # WinRM event log + AD collection
 │   │   ├── DCAnomalyAgent.Detectors.psm1    # Rule-based anomaly detection
@@ -136,6 +149,7 @@ python app.py
 | `MemberServer` | WinRM | `compliance-endpoints.psd1` | Local admins, LAPS, RDP NLA, Defender, SMBv1, patching, firewall |
 | `Workstation` | WinRM | `compliance-endpoints.psd1` | Same as MemberServer + BitLocker |
 | `Linux` | SSH (key-based) | `compliance-linux.psd1` | PermitRootLogin, PasswordAuth, auditd, SELinux/AppArmor, patch age |
+| `WebApplication` | HTTPS (agentless) | `compliance-owasp.psd1` | TLS versions, HSTS/CSP/nosniff/clickjacking headers, cookie flags, banner disclosure |
 
 ---
 
@@ -146,12 +160,22 @@ python app.py
 | CIS Benchmarks | Windows Server (DC + member server), Workstation, Distribution-Independent Linux |
 | NIST SP 800-53 | Rev 5 control references on every check |
 | ISO 27001 | Annex A references on every check |
+| HIPAA Security Rule | 45 CFR §164.312/§164.308 technical safeguards — access control, automatic logoff, encryption at rest, audit controls, transmission security (`compliance-hipaa.psd1`) |
+| OWASP Top 10:2021 / ASVS v4 | Agentless HTTPS posture checks on web applications (`compliance-owasp.psd1`) |
 
-All three frameworks are tagged on every control — filter by framework or severity at scan time:
+Controls carry cross-references to multiple frameworks, so one scan serves several audits. Filter by framework or severity at scan time:
 
 ```powershell
 .\Run-AnomalyScan.ps1 -ComplianceScan -FrameworkFilter CIS -SeverityFilter Critical,High
+
+# HIPAA audit prep across all Windows + Linux assets
+.\Run-AnomalyScan.ps1 -ComplianceScan -FrameworkFilter HIPAA
+
+# OWASP posture check on your intranet apps (agentless, no credentials)
+.\Run-AnomalyScan.ps1 -ComplianceScan -AssetType WebApplication -TargetHostsOverride 'https://portal.contoso.com,https://hr.contoso.com'
 ```
+
+> The OWASP checks are passive posture checks (headers, TLS, cookies) probed from the jump server — not a DAST scanner. Pair with OWASP ZAP for active testing and feed results into the same SharePoint list.
 
 ---
 

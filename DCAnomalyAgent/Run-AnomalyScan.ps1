@@ -36,7 +36,7 @@ param(
     [string]$DomainControllerOverride,
     [switch]$JsonOutput,
     # Limit the compliance scan to specific asset types. Default: all configured types.
-    [ValidateSet('DomainController','MemberServer','Workstation','Linux')][string[]]$AssetType,
+    [ValidateSet('DomainController','MemberServer','Workstation','Linux','WebApplication')][string[]]$AssetType,
     # Override the target host list for compliance (comma-separated). Requires -AssetType
     # with a single value so the right controls are selected. Used by the web UI.
     [string]$TargetHostsOverride

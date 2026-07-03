@@ -78,8 +78,10 @@
             "$PSScriptRoot\compliance-frameworks.psd1"
             "$PSScriptRoot\compliance-endpoints.psd1"
             "$PSScriptRoot\compliance-linux.psd1"
+            "$PSScriptRoot\compliance-hipaa.psd1"
+            "$PSScriptRoot\compliance-owasp.psd1"
         )
-        # Filter by framework name (e.g. 'CIS','NIST','ISO') or leave empty for all
+        # Filter by framework name (e.g. 'CIS','NIST','ISO','HIPAA','OWASP') or leave empty for all
         FrameworkFilter  = @()
         # Filter by severity or leave empty for all: 'Critical','High','Medium','Low'
         SeverityFilter   = @()
@@ -114,6 +116,13 @@
                 KeyPath = "$PSScriptRoot\..\State\ssh\id_ed25519"
                 Port    = 22
             }
+        }
+        WebApplication = @{
+            # HTTPS endpoints for OWASP posture checks — probed directly from the
+            # jump server (headers/TLS/cookies), no agent or credentials needed.
+            # Bare hostnames are probed as https://<host>.
+            Hosts         = @('https://intranet.contoso.com')
+            DiscoverFromAD = $false
         }
     }
 

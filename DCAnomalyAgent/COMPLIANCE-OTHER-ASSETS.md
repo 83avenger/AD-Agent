@@ -14,6 +14,10 @@ Each control declares which asset types it applies to via an `AppliesTo` array:
 | `MemberServer` | WinRM | Host hardening (local admins, LAPS, RDP NLA, firewall, Defender, SMBv1, patching, services, log size) | `Config/compliance-endpoints.psd1` |
 | `Workstation` | WinRM | Same host hardening **+ BitLocker** | `Config/compliance-endpoints.psd1` |
 | `Linux` | **SSH** | SSH hardening, host firewall, auditd, SELinux/AppArmor, password aging, legacy services, patching | `Config/compliance-linux.psd1` |
+| `WebApplication` | **HTTPS (agentless)** | OWASP Top 10 posture: TLS versions, security headers, cookie flags, banner disclosure | `Config/compliance-owasp.psd1` |
+
+HIPAA Security Rule controls (`Config/compliance-hipaa.psd1`) span the Windows and
+Linux asset types above — run them alone with `-FrameworkFilter HIPAA`.
 
 Controls shared across all Windows hosts (firewall, SMBv1, RDP NLA, patch age,
 log size) list multiple types in `AppliesTo`, so they run everywhere.

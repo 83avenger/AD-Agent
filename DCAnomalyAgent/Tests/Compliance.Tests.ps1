@@ -58,6 +58,32 @@ Describe 'Get-ComplianceControls AssetTypeFilter' {
         ($controls | Where-Object { $_.Id -eq 'EP-BL-001' }) | Should -Not -BeNullOrEmpty
     }
 
+    It 'returns only WebApplication-applicable controls from the OWASP file' {
+        $controls = Get-ComplianceControls `
+            -FrameworkPath "$PSScriptRoot\..\Config\compliance-owasp.psd1" `
+            -AssetTypeFilter 'WebApplication'
+        $controls.Count | Should -BeGreaterThan 0
+        foreach ($c in $controls) { $c.AppliesTo | Should -Contain 'WebApplication' }
+    }
+
+    It 'every HIPAA control carries a HIPAA Security Rule citation' {
+        $data = Import-PowerShellDataFile "$PSScriptRoot\..\Config\compliance-hipaa.psd1"
+        $data.Controls.Count | Should -BeGreaterThan 0
+        foreach ($c in $data.Controls) {
+            $c.Frameworks.Keys | Should -Contain 'HIPAA'
+            $c.Frameworks.HIPAA | Should -Match '^164\.'
+        }
+    }
+
+    It 'filters HIPAA controls via FrameworkFilter across merged files' {
+        $controls = Get-ComplianceControls -FrameworkPath @(
+            "$PSScriptRoot\..\Config\compliance-frameworks.psd1",
+            "$PSScriptRoot\..\Config\compliance-hipaa.psd1"
+        ) -FrameworkFilter @('HIPAA')
+        $controls.Count | Should -BeGreaterThan 0
+        foreach ($c in $controls) { $c.Frameworks.Keys | Should -Contain 'HIPAA' }
+    }
+
     It 'merges multiple framework files' {
         $controls = Get-ComplianceControls -FrameworkPath @(
             "$PSScriptRoot\..\Config\compliance-frameworks.psd1",
