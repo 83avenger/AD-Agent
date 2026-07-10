@@ -379,7 +379,144 @@ function Send-EmailZeroDayAlert {
     }
 }
 
+function Send-TeamsCertificateReport {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$WebhookUrl,
+        [Parameter(Mandatory)][array]$Certificates,
+        [int]$ThresholdDays = 90
+    )
+
+    $real = $Certificates | Where-Object { $null -ne $_.DaysRemaining }
+    if (-not $real -or $real.Count -eq 0) { return }
+
+    $severityIcon = @{ Critical = '🔴'; High = '🟠'; Medium = '🟡'; Low = '🔵' }
+    $top = $real | Sort-Object @{ e = { $_SeverityOrder[$_.Severity] } }, DaysRemaining | Select-Object -First 15
+
+    $facts = $top | ForEach-Object {
+        $days = if ($_.DaysRemaining -lt 0) { "EXPIRED $([math]::Abs($_.DaysRemaining))d ago" } else { "$($_.DaysRemaining)d left" }
+        @{
+            title = "$($severityIcon[$_.Severity]) [$($_.Severity)] $days — $($_.Subject)"
+            value = "Issuer: $($_.Issuer) | $($_.Sources) | $($_.Locations)"
+        }
+    }
+    if ($real.Count -gt 15) {
+        $facts += @{ title = '...'; value = "$($real.Count - 15) more certificate(s) in the full report." }
+    }
+
+    $anyCritical = $real | Where-Object { $_.Severity -eq 'Critical' }
+    $color = if ($anyCritical) { 'C0392B' } else { 'F0AD4E' }
+
+    $card = @{
+        '@type'    = 'MessageCard'
+        '@context' = 'http://schema.org/extensions'
+        summary    = "Certificate Expiry: $($real.Count) cert(s) expiring within $ThresholdDays days"
+        themeColor = $color
+        title      = "Certificate Expiry Report — $($real.Count) cert(s) expiring within $ThresholdDays days"
+        sections   = @(@{ activityTitle = 'Sorted by urgency'; facts = $facts })
+    }
+
+    try {
+        Invoke-RestMethod -Uri $WebhookUrl -Method Post -Body ($card | ConvertTo-Json -Depth 8) -ContentType 'application/json'
+    } catch {
+        Write-Warning "Failed to send Teams certificate report: $_"
+    }
+}
+
+function Send-EmailCertificateReport {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$EmailConfig,
+        [Parameter(Mandatory)][array]$Certificates,
+        [int]$ThresholdDays = 90
+    )
+
+    if (-not $EmailConfig.Enabled) { return }
+    $real = $Certificates | Where-Object { $null -ne $_.DaysRemaining }
+    if ((-not $real -or $real.Count -eq 0) -and -not $EmailConfig.SendOnNoFindings) { return }
+
+    try {
+        $rows = $real | Sort-Object @{ e = { $_SeverityOrder[$_.Severity] } }, DaysRemaining | ForEach-Object {
+            [pscustomobject]@{
+                Severity      = $_.Severity
+                DaysRemaining = if ($_.DaysRemaining -lt 0) { "EXPIRED ($($_.DaysRemaining))" } else { $_.DaysRemaining }
+                Subject       = $_.Subject
+                Issuer        = $_.Issuer
+                NotAfter      = $_.NotAfter
+                Sources       = $_.Sources
+                Locations     = $_.Locations
+            }
+        }
+        $count = @($real).Count
+        $table = _Build-HtmlTable -Rows $rows -Columns @('Severity','DaysRemaining','Subject','Issuer','NotAfter','Sources','Locations')
+        $body  = "<h2 style=`"color:#c0392b`">Certificate Expiry Report — $count cert(s) expiring within $ThresholdDays days</h2>$table"
+        $cred  = _Get-EmailCredential -EmailConfig $EmailConfig
+
+        $params = @{
+            To         = $EmailConfig.To
+            From       = $EmailConfig.From
+            Subject    = "[AD-Agent] Certificate Expiry — $count cert(s) within $ThresholdDays days — $(Get-Date -Format 'yyyy-MM-dd')"
+            Body       = $body
+            BodyAsHtml = $true
+            SmtpServer = $EmailConfig.SmtpServer
+            Port       = $EmailConfig.Port
+            UseSsl     = $EmailConfig.UseSsl
+        }
+        if ($cred) { $params['Credential'] = $cred }
+        Send-MailMessage @params
+    } catch {
+        Write-Warning "Failed to send email certificate report: $_"
+    }
+}
+
+function Write-SharePointCertificateItems {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$SharePointConfig,
+        [Parameter(Mandatory)][array]$Certificates,
+        [datetime]$ScanTime = (Get-Date)
+    )
+
+    $real = $Certificates | Where-Object { $null -ne $_.DaysRemaining }
+    if (-not $real -or $real.Count -eq 0) { return }
+
+    $targetListId = $SharePointConfig.CertificateListId
+    if (-not $targetListId -or $targetListId -eq 'REPLACE_ME') {
+        Write-Warning "No SharePoint list ID configured for certificate items (set SharePointConfig.CertificateListId)."
+        return
+    }
+
+    try {
+        $token = Get-GraphAccessToken -TenantId $SharePointConfig.TenantId -ClientId $SharePointConfig.ClientId `
+            -CertificateThumbprint $SharePointConfig.CertificateThumbprint
+
+        $headers = @{ Authorization = "Bearer $token"; 'Content-Type' = 'application/json' }
+        $uri = "https://graph.microsoft.com/v1.0/sites/$($SharePointConfig.SiteId)/lists/$targetListId/items"
+
+        foreach ($c in $real) {
+            $body = @{
+                fields = @{
+                    Title         = $c.Subject
+                    Severity      = $c.Severity
+                    DaysRemaining = $c.DaysRemaining
+                    NotAfter      = if ($c.NotAfter) { $c.NotAfter.ToString('o') } else { '' }
+                    Issuer        = $c.Issuer
+                    Sources       = $c.Sources
+                    Locations     = $c.Locations
+                    Thumbprint    = $c.Id
+                    ScanTime      = $ScanTime.ToString('o')
+                }
+            } | ConvertTo-Json -Depth 5
+
+            Invoke-RestMethod -Uri $uri -Method Post -Headers $headers -Body $body | Out-Null
+        }
+    } catch {
+        Write-Warning "Failed to write certificate items to SharePoint: $_"
+    }
+}
+
 Export-ModuleMember -Function Send-TeamsAlert, Write-SharePointListItem, Get-GraphAccessToken, `
     Send-TeamsComplianceReport, Write-SharePointComplianceItems, `
     Send-EmailAlert, Send-EmailComplianceReport, `
-    Send-TeamsZeroDayAlert, Send-EmailZeroDayAlert
+    Send-TeamsZeroDayAlert, Send-EmailZeroDayAlert, `
+    Send-TeamsCertificateReport, Send-EmailCertificateReport, Write-SharePointCertificateItems

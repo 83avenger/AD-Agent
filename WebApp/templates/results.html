@@ -46,6 +46,15 @@
     Compliance CSV
   </a>
   {% endif %}
+  {% if 'certificate' in scan_types %}
+  <a href="/download/csv/certificates" class="btn btn-outline btn-sm">
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
+      <polyline points="14 2 14 8 20 8"/>
+    </svg>
+    Certificates CSV
+  </a>
+  {% endif %}
 </div>
 
 <!-- Score cards -->
@@ -87,6 +96,11 @@
   {% if 'compliance' in scan_types %}
   <button class="tab-btn" onclick="showTab('compliance', this)">
     📋 Compliance Gaps ({{ gaps | length }})
+  </button>
+  {% endif %}
+  {% if 'certificate' in scan_types %}
+  <button class="tab-btn" onclick="showTab('certificates', this)">
+    🔐 Expiring Certificates ({{ certs | length }})
   </button>
   {% endif %}
 </div>
@@ -191,6 +205,51 @@
                 {% for k, v in fw.items() %}<div><b>{{ k }}:</b> {{ v }}</div>{% endfor %}
               {% else %}{{ fw }}{% endif %}
             </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
+<!-- ── Certificates tab ──────────────────────────────────────────────── -->
+{% if 'certificate' in scan_types %}
+<div id="tab-certificates" class="tab-panel">
+  <div class="card">
+    <div class="card-header">Certificates Expiring Within Threshold</div>
+    {% if not certs %}
+    <p style="color:var(--muted); font-size:.9rem;">✅ No certificates are expiring within the threshold window.</p>
+    {% else %}
+    <div class="tbl-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th style="width:90px">Severity</th>
+            <th style="width:90px">Days Left</th>
+            <th>Subject</th>
+            <th>Issuer</th>
+            <th>Source(s)</th>
+            <th>Location(s)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for c in certs %}
+          {% set sev = c.get('Severity','Low') %}
+          <tr>
+            <td><span class="badge badge-{{ sev | lower }}">{{ sev }}</span></td>
+            <td style="font-weight:700; {% if c.get('DaysRemaining',0) < 0 %}color:var(--critical);{% endif %}">
+              {% if c.get('DaysRemaining',0) < 0 %}EXPIRED{% else %}{{ c.get('DaysRemaining') }}d{% endif %}
+            </td>
+            <td style="font-size:.82rem;">
+              <strong>{{ c.get('Subject','') }}</strong>
+              {% if c.get('DnsNames') %}<br><span style="color:var(--muted); font-size:.75rem;">{{ c.get('DnsNames') }}</span>{% endif %}
+            </td>
+            <td style="font-size:.8rem; color:var(--muted);">{{ c.get('Issuer','') }}</td>
+            <td style="font-size:.78rem;">{{ c.get('Sources','') }}</td>
+            <td style="font-size:.78rem; color:var(--muted);">{{ c.get('Locations','') }}</td>
           </tr>
           {% endfor %}
         </tbody>

@@ -22,7 +22,12 @@ from flask import (
     session,
     url_for,
 )
-from report_generator import generate_csv_anomalies, generate_csv_compliance, generate_pdf
+from report_generator import (
+    generate_csv_anomalies,
+    generate_csv_certificates,
+    generate_csv_compliance,
+    generate_pdf,
+)
 
 APP_ROOT    = Path(__file__).parent
 PS_SCRIPT   = APP_ROOT.parent / "DCAnomalyAgent" / "Run-AnomalyScan.ps1"
@@ -68,6 +73,8 @@ def _run_scan(
 
     if "compliance" in scan_types:
         cmd.append("-ComplianceScan")
+    if "certificate" in scan_types:
+        cmd.append("-CertificateScan")
     if frameworks:
         cmd += ["-FrameworkFilter"] + frameworks
     if severities:
@@ -133,6 +140,20 @@ def _mock_result(dcs: list[str]) -> dict:
             "ByDC": [{"DC": dcs[0] if dcs else "dc01", "Total": 20, "Passed": 17, "Failed": 3, "ScorePct": 85.0}],
             "GapsBySeverity": [{"Severity": "Critical", "GapCount": 1}, {"Severity": "High", "GapCount": 2}],
         },
+        "ExpiringCertificates": [
+            {"Id": "A1B2C3", "Subject": "CN=portal.contoso.com", "Issuer": "CN=Contoso Issuing CA",
+             "NotAfter": "2025-07-05T00:00:00", "DaysRemaining": 11, "Severity": "Critical",
+             "Sources": "TlsEndpoint", "Locations": "portal.contoso.com [portal.contoso.com:443]",
+             "DnsNames": "portal.contoso.com, www.contoso.com", "CollectionErrors": None},
+            {"Id": "D4E5F6", "Subject": "CN=dc01.contoso.com", "Issuer": "CN=Contoso Issuing CA",
+             "NotAfter": "2025-07-20T00:00:00", "DaysRemaining": 26, "Severity": "High",
+             "Sources": "MachineStore, TlsEndpoint", "Locations": "dc01.contoso.com [Cert:\\LocalMachine\\My]; dc01.contoso.com [dc01.contoso.com:636]",
+             "DnsNames": "dc01.contoso.com", "CollectionErrors": None},
+            {"Id": "G7H8I9", "Subject": "CN=sql01.contoso.com", "Issuer": "CN=Contoso Issuing CA",
+             "NotAfter": "2025-08-15T00:00:00", "DaysRemaining": 52, "Severity": "Medium",
+             "Sources": "MachineStore", "Locations": "sql01.contoso.com [Cert:\\LocalMachine\\My]",
+             "DnsNames": "sql01.contoso.com", "CollectionErrors": None},
+        ],
         "_demo": True,
     }
 
@@ -176,14 +197,20 @@ def scan():
     anomalies = result.get("Anomalies") or []
     gaps       = result.get("ComplianceGaps") or []
     summary    = result.get("ComplianceSummary") or {}
+    certs      = result.get("ExpiringCertificates") or []
+    sev_rank   = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3}
 
     return render_template(
         "results.html",
         scan_time  = result.get("ScanTime", ""),
         dcs        = dcs,
         anomalies  = anomalies,
-        gaps       = sorted(gaps, key=lambda g: {"Critical":0,"High":1,"Medium":2,"Low":3}.get(g.get("Severity","Low"), 9)),
+        gaps       = sorted(gaps, key=lambda g: sev_rank.get(g.get("Severity","Low"), 9)),
         summary    = summary,
+        certs      = sorted(
+            [c for c in certs if c.get("DaysRemaining") is not None],
+            key=lambda c: (sev_rank.get(c.get("Severity","Low"), 9), c.get("DaysRemaining", 9999)),
+        ),
         scan_types = scan_types,
         frameworks = frameworks,
         severities = severities,
@@ -233,6 +260,21 @@ def download_csv_compliance():
         csv_str,
         mimetype="text/csv",
         headers={"Content-Disposition": f"attachment; filename=compliance_gaps_{ts}.csv"},
+    )
+
+
+@app.route("/download/csv/certificates")
+def download_csv_certificates():
+    raw = session.get("last_result")
+    if not raw:
+        return "No scan result in session. Run a scan first.", 400
+    result = json.loads(raw)
+    csv_str = generate_csv_certificates(result)
+    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    return Response(
+        csv_str,
+        mimetype="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=expiring_certificates_{ts}.csv"},
     )
 
 

@@ -30,6 +30,7 @@ param(
     [switch]$DryRun,
     [switch]$ComplianceScan,
     [switch]$ZeroDayScan,
+    [switch]$CertificateScan,
     [switch]$TestEmail,
     [string[]]$FrameworkFilter,
     [ValidateSet('Critical','High','Medium','Low')][string[]]$SeverityFilter,
@@ -62,6 +63,18 @@ $scanTime = Get-Date
 if (-not (Get-Module DCAnomalyAgent.ZeroDay -ErrorAction SilentlyContinue)) {
     if ($ZeroDayScan -or ($config.ZeroDay -and $config.ZeroDay.Enabled)) {
         Import-Module "$PSScriptRoot\Modules\DCAnomalyAgent.ZeroDay.psm1" -Force
+    }
+}
+
+# Certificate scan is a heavy infrastructure sweep, so — like the compliance scan —
+# it runs only on explicit request (-CertificateScan or the dedicated Scheduled Task),
+# gated by the Enabled master switch. It does NOT piggyback on every anomaly run.
+# Needs its own module plus Compliance (for Get-AssetTargets host resolution).
+$runCertScan = $CertificateScan -and (-not $config.Certificates -or $config.Certificates.Enabled)
+if ($runCertScan) {
+    Import-Module "$PSScriptRoot\Modules\DCAnomalyAgent.Certificates.psm1" -Force
+    if (-not (Get-Module DCAnomalyAgent.Compliance -ErrorAction SilentlyContinue)) {
+        Import-Module "$PSScriptRoot\Modules\DCAnomalyAgent.Compliance.psm1" -Force
     }
 }
 
@@ -165,6 +178,8 @@ if (-not $DryRun -and $allAnomalies.Count -gt 0) {
 # ─────────────────────────────────────────────────────────────────────────────
 # COMPLIANCE SCAN
 # ─────────────────────────────────────────────────────────────────────────────
+$complianceGaps    = $null
+$complianceSummary = $null
 if ($ComplianceScan -and $config.Compliance.Enabled) {
     Write-ScanLog "Starting compliance scan..."
 
@@ -235,16 +250,9 @@ if ($ComplianceScan -and $config.Compliance.Enabled) {
         }
     }
 
-    if ($JsonOutput) {
-        @{
-            ScanTime          = $scanTime.ToString('o')
-            Anomalies         = $allAnomalies
-            ComplianceGaps    = $gaps
-            ComplianceSummary = $summary
-        } | ConvertTo-Json -Depth 8
-        return
-    }
-    return [pscustomobject]@{ Anomalies = $allAnomalies; ComplianceGaps = $gaps; Summary = $summary }
+    # Captured for the consolidated output at the end of the script.
+    $complianceGaps    = $gaps
+    $complianceSummary = $summary
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -288,12 +296,126 @@ if ($runZeroDay) {
     }
 }
 
+# ─────────────────────────────────────────────────────────────────────────────
+# CERTIFICATE EXPIRY SCAN
+# ─────────────────────────────────────────────────────────────────────────────
+$expiringCerts = @()
+if ($runCertScan) {
+    Write-ScanLog "Starting certificate expiry scan..."
+    $certCfg = $config.Certificates
+    $thresholdDays = if ($certCfg.ThresholdDays) { $certCfg.ThresholdDays } else { 90 }
+    $collected = @()
+
+    # 1. Windows machine certificate stores across the configured asset types.
+    foreach ($at in $certCfg.ScanAssetTypes) {
+        $assetCfg = $config.Assets[$at]
+        if (-not $assetCfg) { continue }
+        try {
+            $targets = Get-AssetTargets -AssetType $at -AssetConfig $assetCfg -FallbackHosts $config.DomainControllers
+        } catch {
+            Write-ScanLog "ERROR (cert: resolve $at targets): $_"; continue
+        }
+        foreach ($t in $targets) {
+            try {
+                $collected += Get-MachineCertificate -ComputerName $t -Stores $certCfg.MachineStores
+            } catch {
+                Write-ScanLog "ERROR (cert: machine store on $t): $_"
+            }
+        }
+    }
+
+    # 2. TLS endpoints: explicit config list + auto-derived (DC LDAPS, WebApplication 443).
+    $endpoints = @()
+    if ($certCfg.EndpointsPath -and (Test-Path $certCfg.EndpointsPath)) {
+        try { $endpoints += (Import-PowerShellDataFile -Path $certCfg.EndpointsPath).Endpoints } catch {
+            Write-ScanLog "ERROR (cert: load endpoints file): $_"
+        }
+    }
+    if ($certCfg.ProbeDcLdaps) {
+        foreach ($dc in $config.DomainControllers) { $endpoints += @{ Host = $dc; Port = 636; Name = 'DC LDAPS' } }
+    }
+    if ($certCfg.ProbeWebApps -and $config.Assets.WebApplication) {
+        foreach ($w in $config.Assets.WebApplication.Hosts) {
+            $h = $w -replace '^https?://' -replace '/.*$'
+            $endpoints += @{ Host = $h; Port = 443; Name = 'WebApplication' }
+        }
+    }
+    foreach ($ep in $endpoints) {
+        if (-not $ep.Host) { continue }
+        try {
+            $collected += Get-EndpointCertificate -TargetHost $ep.Host -Port $ep.Port
+        } catch {
+            Write-ScanLog "ERROR (cert: TLS probe $($ep.Host):$($ep.Port)): $_"
+        }
+    }
+
+    # 3. AD Certificate Services (optional).
+    if ($certCfg.Adcs -and $certCfg.Adcs.Enabled -and $certCfg.Adcs.CaConfig) {
+        try {
+            $collected += Get-CaIssuedCertificate -CaConfig $certCfg.Adcs.CaConfig -ThresholdDays $thresholdDays
+        } catch {
+            Write-ScanLog "ERROR (cert: ADCS query): $_"
+        }
+    }
+
+    $expiringCerts = Find-ExpiringCertificates -Certificates $collected -ThresholdDays $thresholdDays
+    $expiringReal  = @($expiringCerts | Where-Object { $null -ne $_.DaysRemaining })
+    Write-ScanLog "Certificate scan complete: $($expiringReal.Count) cert(s) expiring within $thresholdDays days."
+
+    # Save markdown report to disk (always).
+    if ($certCfg.ReportOutputPath) {
+        $certReportDir = Split-Path -Path $certCfg.ReportOutputPath -Parent
+        if (-not (Test-Path $certReportDir)) { New-Item -ItemType Directory -Path $certReportDir -Force | Out-Null }
+        Format-CertificateReport -Findings $expiringCerts -ThresholdDays $thresholdDays -ScanTime $scanTime |
+            Set-Content -Path $certCfg.ReportOutputPath -Encoding UTF8
+        Write-ScanLog "Certificate report saved: $($certCfg.ReportOutputPath)"
+    }
+
+    if ($DryRun) {
+        Write-Host "`n=== EXPIRING CERTIFICATES (within $thresholdDays days) ==="
+        $expiringReal | Select-Object Severity, DaysRemaining, Subject, Sources, Locations | Format-Table -AutoSize
+    } elseif ($expiringReal.Count -gt 0) {
+        if ($config.Reporting.Teams.Enabled) {
+            Send-TeamsCertificateReport -WebhookUrl $config.Reporting.Teams.WebhookUrl `
+                -Certificates $expiringCerts -ThresholdDays $thresholdDays
+        }
+        if ($config.Reporting.Email.Enabled) {
+            Send-EmailCertificateReport -EmailConfig $config.Reporting.Email `
+                -Certificates $expiringCerts -ThresholdDays $thresholdDays
+        }
+        if ($config.Reporting.SharePoint.Enabled) {
+            Write-SharePointCertificateItems -SharePointConfig $config.Reporting.SharePoint `
+                -Certificates $expiringCerts -ScanTime $scanTime
+        }
+    }
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CONSOLIDATED OUTPUT
+# ─────────────────────────────────────────────────────────────────────────────
 if ($JsonOutput) {
-    @{
+    $payload = [ordered]@{
         ScanTime  = $scanTime.ToString('o')
         Anomalies = $allAnomalies
-    } | ConvertTo-Json -Depth 8
+    }
+    if ($ComplianceScan -and $config.Compliance.Enabled) {
+        $payload['ComplianceGaps']    = $complianceGaps
+        $payload['ComplianceSummary'] = $complianceSummary
+    }
+    if ($runCertScan) {
+        $payload['ExpiringCertificates'] = $expiringCerts
+    }
+    $payload | ConvertTo-Json -Depth 8
     return
+}
+
+if (($ComplianceScan -and $config.Compliance.Enabled) -or $runCertScan) {
+    return [pscustomobject]@{
+        Anomalies            = $allAnomalies
+        ComplianceGaps       = $complianceGaps
+        Summary              = $complianceSummary
+        ExpiringCertificates = $expiringCerts
+    }
 }
 
 return $allAnomalies

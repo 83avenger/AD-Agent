@@ -69,3 +69,15 @@ Register-ScheduledTask -TaskName "$TaskName-ZeroDay" -Action $zeroDayAction `
     -Description 'Pulls CISA KEV and NVD feeds and alerts on newly-added CVEs matching the watched product list'
 
 Write-Host "Zero-day task '$TaskName-ZeroDay' registered to run daily at 08:00 under $GmsaAccount"
+
+# ── Certificate expiry task (runs once daily) ─────────────────────────────────
+$certAction = New-ScheduledTaskAction -Execute 'powershell.exe' `
+    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`" -CertificateScan"
+
+$certTrigger = New-ScheduledTaskTrigger -Daily -At '09:00'
+
+Register-ScheduledTask -TaskName "$TaskName-Certificates" -Action $certAction `
+    -Trigger $certTrigger -Principal $principal -Settings $settings `
+    -Description 'Scans machine stores, TLS endpoints and the CA for certificates expiring within the configured threshold (default 90 days)'
+
+Write-Host "Certificate task '$TaskName-Certificates' registered to run daily at 09:00 under $GmsaAccount"

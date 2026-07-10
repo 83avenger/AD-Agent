@@ -64,6 +64,7 @@
             SiteId   = 'REPLACE_ME'
             ListId   = 'REPLACE_ME'   # Anomaly events list
             ComplianceListId = 'REPLACE_ME'  # Compliance gap items list (separate list)
+            CertificateListId = 'REPLACE_ME' # Expiring-certificate items list (separate list)
             # When false, only anomalies are written; when true, every scan run is logged.
             LogEveryScan = $false
         }
@@ -145,6 +146,30 @@
         AlertOnNew       = $true
         # Also alert if a matching KEV entry has a CISA due date within N days (0 = disabled).
         AlertDueDateDays = 7
+    }
+
+    # Certificate expiry scanning
+    # Scans Windows machine stores (WinRM), live TLS endpoints (socket probe), and
+    # optionally an Enterprise CA, then reports any certificate expiring within
+    # ThresholdDays. Reuses the Assets{} inventory for machine-store host resolution.
+    Certificates = @{
+        Enabled        = $true
+        ThresholdDays  = 90
+        # Windows asset types to sweep machine certificate stores on.
+        ScanAssetTypes = @('DomainController', 'MemberServer', 'Workstation')
+        MachineStores  = @('My', 'CA', 'WebHosting')
+        # Extra TLS endpoints to probe (load balancers, appliances, non-Windows services).
+        EndpointsPath  = "$PSScriptRoot\certificate-endpoints.psd1"
+        # Auto-probe LDAPS (636) on every Domain Controller and HTTPS (443) on every
+        # WebApplication host from the Assets block.
+        ProbeDcLdaps   = $true
+        ProbeWebApps   = $true
+        # AD Certificate Services (optional — needs read access to the CA).
+        Adcs = @{
+            Enabled  = $false
+            CaConfig = ''   # e.g. 'CA01.contoso.com\Contoso-Issuing-CA'
+        }
+        ReportOutputPath = "$PSScriptRoot\..\State\certificate-report.md"
     }
 
     LogPath = "$PSScriptRoot\..\State\scan.log"

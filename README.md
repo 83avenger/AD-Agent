@@ -10,6 +10,7 @@ A one-stop security services platform for Windows/AD environments, built in Powe
 | Infrastructure compliance | CIS / NIST / ISO / HIPAA controls on DCs, servers, workstations, Linux | `Run-AnomalyScan.ps1 -ComplianceScan` |
 | Web application posture | OWASP Top 10 header/TLS/cookie checks on HTTPS endpoints | `Run-AnomalyScan.ps1 -ComplianceScan -AssetType WebApplication` |
 | Vulnerability intelligence | CISA KEV + NVD zero-day feed, deduplicated alerts | `Run-AnomalyScan.ps1 -ZeroDayScan` |
+| Certificate expiry | Machine stores + TLS endpoints + Enterprise CA, flags certs expiring within 90 days | `Run-AnomalyScan.ps1 -CertificateScan` |
 | Asset inventory | AD + network discovery and classification | `Run-Discovery.ps1` |
 | Reporting & alerting | Teams, SharePoint, email, markdown, PDF/CSV | automatic / web UI |
 
@@ -25,6 +26,7 @@ A one-stop security services platform for Windows/AD environments, built in Powe
 | Asset discovery | AD enumeration + TCP CIDR sweep; classifies and merges into a unified inventory |
 | Reporting | Teams Adaptive Card alerts, SharePoint list items (Graph API), **email (SMTP)**, local markdown report, PDF/CSV download via web UI |
 | Zero-day telemetry | Pulls CISA KEV catalog + NVD daily; alerts on newly-added CVEs matching your product watch list; deduplicates so each CVE fires only once |
+| Certificate expiry | Scans Windows machine stores (WinRM), live TLS endpoints (socket probe), and an Enterprise CA; flags any certificate expiring within a configurable threshold (default 90 days) with severity by days-remaining |
 | Web UI | Flask app — choose scan type, frameworks, severities, target hosts; download PDF or CSV reports |
 
 ---
@@ -50,9 +52,11 @@ AD-Agent/
 │   │   ├── DCAnomalyAgent.Reporting.psm1    # Teams + SharePoint output
 │   │   ├── DCAnomalyAgent.Compliance.psm1   # Compliance engine
 │   │   ├── DCAnomalyAgent.Discovery.psm1    # Asset discovery (AD + network)
-│   │   └── DCAnomalyAgent.ZeroDay.psm1      # CISA KEV + NVD zero-day telemetry
+│   │   ├── DCAnomalyAgent.ZeroDay.psm1      # CISA KEV + NVD zero-day telemetry
+│   │   └── DCAnomalyAgent.Certificates.psm1 # Certificate expiry scanning (stores/TLS/CA)
 │   ├── Config/
-│   │   └── zeroday-products.psd1        # Vendor/product watch list for zero-day alerts
+│   │   ├── zeroday-products.psd1        # Vendor/product watch list for zero-day alerts
+│   │   └── certificate-endpoints.psd1  # Extra TLS endpoints to probe for cert expiry
 │   ├── Install/
 │   │   └── Register-ScheduledTask.ps1   # Registers gMSA-run Scheduled Tasks (incl. zero-day)
 │   ├── Tests/
@@ -248,6 +252,46 @@ https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.j
 
 ---
 
+## Certificate expiry scanning
+
+Scans three certificate sources and reports any certificate expiring within `ThresholdDays` (default 90), with severity by days-remaining (Critical ≤14, High ≤30, Medium ≤60, Low ≤90; already-expired = Critical):
+
+1. **Windows machine stores** — `LocalMachine\My`, `CA`, `WebHosting` on every configured Windows asset, over WinRM. Trust-store noise (public/Microsoft roots) is filtered out so you see operational certs.
+2. **TLS endpoints** — socket-probes live services and reads the presented server certificate. Auto-derives DC LDAPS (636) and WebApplication HTTPS (443) from the `Assets` block; add load balancers, appliances, and non-Windows services in `Config/certificate-endpoints.psd1`.
+3. **AD Certificate Services** — optionally queries an Enterprise CA (`certutil`) for issued certs nearing expiry.
+
+Identical certs found in multiple locations (same thumbprint) are collapsed into one finding listing every location. Unreachable hosts/ports record a collection error instead of aborting the scan.
+
+### Configure (`Config/settings.psd1 → Certificates`)
+
+```powershell
+Certificates = @{
+    Enabled        = $true
+    ThresholdDays  = 90
+    ScanAssetTypes = @('DomainController','MemberServer','Workstation')
+    MachineStores  = @('My','CA','WebHosting')
+    EndpointsPath  = "$PSScriptRoot\certificate-endpoints.psd1"
+    ProbeDcLdaps   = $true      # auto-probe LDAPS 636 on every DC
+    ProbeWebApps   = $true      # auto-probe HTTPS 443 on every WebApplication host
+    Adcs = @{ Enabled = $false; CaConfig = 'CA01.contoso.com\Contoso-Issuing-CA' }
+    ReportOutputPath = "$PSScriptRoot\..\State\certificate-report.md"
+}
+```
+
+### Run
+
+```powershell
+# Dry run — prints the expiring-cert table, sends no alerts
+.\Run-AnomalyScan.ps1 -CertificateScan -DryRun
+
+# Full run — Teams / email / SharePoint alerts on findings
+.\Run-AnomalyScan.ps1 -CertificateScan
+```
+
+Findings are reported to Teams, email, and a dedicated SharePoint list (`CertificateListId`), plus a markdown report at `State\certificate-report.md`. The web UI exposes it as a "🔐 Certificate Scan" option with a CSV/PDF download.
+
+---
+
 ## Scheduling
 
 ```powershell
@@ -255,13 +299,14 @@ cd DCAnomalyAgent\Install
 .\Register-ScheduledTask.ps1 -GmsaAccount 'CONTOSO\svc-dcagent$'
 ```
 
-Creates two Scheduled Tasks under the gMSA:
+Creates these Scheduled Tasks under the gMSA:
 
 | Task | Schedule | Command |
 |---|---|---|
 | `DCAnomalyAgent-Scan` | 06:00, 14:00, 22:00 | Anomaly scan only |
 | `DCAnomalyAgent-Scan-Compliance` | Daily 07:00 | Anomaly + full compliance scan |
 | `DCAnomalyAgent-Scan-ZeroDay` | Daily 08:00 | CISA KEV + NVD zero-day feed pull |
+| `DCAnomalyAgent-Scan-Certificates` | Daily 09:00 | Certificate expiry scan (stores/TLS/CA) |
 
 ---
 

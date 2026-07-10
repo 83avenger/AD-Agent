@@ -61,10 +61,16 @@
               {{'checked' if 'compliance' in cur_types else ''}}>
             <label for="st_compliance">📋 Compliance Scan</label>
           </div>
+          <div class="checkbox-chip">
+            <input type="checkbox" id="st_certificate" name="scan_types" value="certificate"
+              {{'checked' if 'certificate' in cur_types else ''}}>
+            <label for="st_certificate">🔐 Certificate Scan</label>
+          </div>
         </div>
         <p style="font-size:.78rem; color:var(--muted); margin-top:.4rem;">
           Anomaly: event log analysis + UEBA baseline.<br>
-          Compliance: checks against CIS Benchmarks / NIST / ISO 27001 / HIPAA / OWASP.
+          Compliance: checks against CIS Benchmarks / NIST / ISO 27001 / HIPAA / OWASP.<br>
+          Certificate: machine stores + TLS endpoints + CA, flags expiry within 90 days.
         </p>
       </div>
 

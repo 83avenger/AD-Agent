@@ -84,6 +84,8 @@ def generate_pdf(scan_result: dict) -> bytes:
     anomalies = scan_result.get("Anomalies") or []
     gaps       = scan_result.get("ComplianceGaps") or []
     summary    = scan_result.get("ComplianceSummary") or {}
+    certs      = [c for c in (scan_result.get("ExpiringCertificates") or [])
+                  if c.get("DaysRemaining") is not None]
 
     # ── Header ────────────────────────────────────────────────────────────────
     story.append(Paragraph("DC Anomaly &amp; Compliance Report", s["title"]))
@@ -231,6 +233,46 @@ def generate_pdf(scan_result: dict) -> bytes:
             ))
             story.append(Spacer(1, 0.3 * cm))
 
+    # ── Expiring certificates section ─────────────────────────────────────────
+    story.append(Spacer(1, 0.6 * cm))
+    story.append(Paragraph("Expiring Certificates", s["h2"]))
+    story.append(HRFlowable(width="100%", thickness=1, color=BRAND_MID))
+    story.append(Spacer(1, 0.2 * cm))
+
+    if not certs:
+        story.append(Paragraph("No certificates are expiring within the threshold window.", s["body"]))
+    else:
+        sev_order = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3}
+        sorted_certs = sorted(
+            certs,
+            key=lambda c: (sev_order.get(c.get("Severity", "Low"), 9), c.get("DaysRemaining", 9999)),
+        )
+        headers = ["Severity", "Days Left", "Subject", "Issuer", "Source(s)", "Location(s)"]
+        rows = [headers]
+        for c in sorted_certs:
+            days = c.get("DaysRemaining", 0)
+            days_str = f"EXPIRED ({days})" if isinstance(days, (int, float)) and days < 0 else str(days)
+            rows.append([
+                _sev_badge(c.get("Severity", "Low"), s),
+                Paragraph(days_str, s["body"]),
+                Paragraph(str(c.get("Subject", "")), s["small"]),
+                Paragraph(str(c.get("Issuer", "")), s["small"]),
+                Paragraph(str(c.get("Sources", "")), s["small"]),
+                Paragraph(textwrap.shorten(str(c.get("Locations", "")), 90), s["small"]),
+            ])
+        col_w = [1.8*cm, 1.8*cm, 4.0*cm, 3.2*cm, 2.4*cm, 3.9*cm]
+        tbl = Table(rows, colWidths=col_w, repeatRows=1)
+        tbl.setStyle(TableStyle([
+            ("BACKGROUND",   (0, 0), (-1, 0), BRAND_MID),
+            ("TEXTCOLOR",    (0, 0), (-1, 0), colors.white),
+            ("FONTNAME",     (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE",     (0, 0), (-1, 0), 8),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, BRAND_LIGHT]),
+            ("GRID",         (0, 0), (-1, -1), 0.3, colors.lightgrey),
+            ("VALIGN",       (0, 0), (-1, -1), "TOP"),
+        ]))
+        story.append(tbl)
+
     # ── Footer ────────────────────────────────────────────────────────────────
     story.append(Spacer(1, 0.4 * cm))
     story.append(HRFlowable(width="100%", thickness=1, color=colors.lightgrey))
@@ -283,5 +325,32 @@ def generate_csv_compliance(scan_result: dict) -> str:
             "Frameworks_NIST": fw.get("NIST", ""),
             "Frameworks_ISO":  fw.get("ISO", ""),
             "Remediation":     g.get("Remediation", ""),
+        })
+    return buf.getvalue()
+
+
+def generate_csv_certificates(scan_result: dict) -> str:
+    buf = io.StringIO()
+    certs = [c for c in (scan_result.get("ExpiringCertificates") or [])
+             if c.get("DaysRemaining") is not None]
+    sev_order = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3}
+    certs = sorted(certs, key=lambda c: (sev_order.get(c.get("Severity", "Low"), 9),
+                                         c.get("DaysRemaining", 9999)))
+    w = csv.DictWriter(buf, fieldnames=[
+        "Severity", "DaysRemaining", "NotAfter", "Subject", "Issuer",
+        "Sources", "Locations", "DnsNames", "Thumbprint",
+    ])
+    w.writeheader()
+    for c in certs:
+        w.writerow({
+            "Severity":      c.get("Severity", ""),
+            "DaysRemaining": c.get("DaysRemaining", ""),
+            "NotAfter":      str(c.get("NotAfter", ""))[:19],
+            "Subject":       c.get("Subject", ""),
+            "Issuer":        c.get("Issuer", ""),
+            "Sources":       c.get("Sources", ""),
+            "Locations":     c.get("Locations", ""),
+            "DnsNames":      c.get("DnsNames", ""),
+            "Thumbprint":    c.get("Id", ""),
         })
     return buf.getvalue()
