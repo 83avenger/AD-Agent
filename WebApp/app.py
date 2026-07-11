@@ -29,10 +29,14 @@ from report_generator import (
     generate_pdf,
 )
 
-APP_ROOT    = Path(__file__).parent
-PS_SCRIPT   = APP_ROOT.parent / "DCAnomalyAgent" / "Run-AnomalyScan.ps1"
-REPORTS_DIR = APP_ROOT / "reports"
+APP_ROOT      = Path(__file__).parent
+PS_SCRIPT     = APP_ROOT.parent / "DCAnomalyAgent" / "Run-AnomalyScan.ps1"
+STATE_DIR     = APP_ROOT.parent / "DCAnomalyAgent" / "State"
+SNAPSHOT_PATH = STATE_DIR / "latest-scan.json"
+REPORTS_DIR   = APP_ROOT / "reports"
 REPORTS_DIR.mkdir(exist_ok=True)
+
+SEV_RANK = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3}
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET", os.urandom(24))
@@ -154,7 +158,132 @@ def _mock_result(dcs: list[str]) -> dict:
              "Sources": "MachineStore", "Locations": "sql01.contoso.com [Cert:\\LocalMachine\\My]",
              "DnsNames": "sql01.contoso.com", "CollectionErrors": None},
         ],
+        "ZeroDays": [
+            {"CveId": "CVE-2025-21299", "VendorProject": "Microsoft", "Product": "Windows Kerberos",
+             "VulnerabilityName": "Windows Kerberos Security Feature Bypass", "DateAdded": "2025-06-22",
+             "DueDate": "2025-07-13", "RequiredAction": "Apply mitigations per vendor instructions.",
+             "KnownRansomwareCampaignUse": "Known"},
+            {"CveId": "CVE-2025-29824", "VendorProject": "Microsoft", "Product": "Windows CLFS Driver",
+             "VulnerabilityName": "Windows Common Log File System Elevation of Privilege", "DateAdded": "2025-06-20",
+             "DueDate": "2025-07-11", "RequiredAction": "Apply updates per vendor instructions.",
+             "KnownRansomwareCampaignUse": "Unknown"},
+        ],
+        "Freshness": {
+            "Anomalies": datetime.utcnow().isoformat(),
+            "Compliance": datetime.utcnow().isoformat(),
+            "Certificates": datetime.utcnow().isoformat(),
+            "ZeroDay": datetime.utcnow().isoformat(),
+        },
         "_demo": True,
+    }
+
+
+def _load_snapshot() -> tuple[dict, bool]:
+    """Return (snapshot_dict, is_demo). Falls back to mock data if no snapshot exists."""
+    try:
+        if SNAPSHOT_PATH.exists():
+            # PowerShell Set-Content -Encoding UTF8 may write a BOM; utf-8-sig handles both.
+            with open(SNAPSHOT_PATH, encoding="utf-8-sig") as fh:
+                return json.load(fh), False
+    except Exception:
+        pass
+    return _mock_result(["dc01.contoso.com"]), True
+
+
+def _sev_counts(items: list, key: str = "Severity") -> dict:
+    out = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0}
+    for it in items:
+        s = it.get(key, "Low")
+        if s in out:
+            out[s] += 1
+    return out
+
+
+def _dashboard_payload() -> dict:
+    """Compute render-ready aggregates for the rotating dashboard from the snapshot."""
+    data, demo = _load_snapshot()
+
+    anomalies = data.get("Anomalies") or []
+    gaps      = data.get("ComplianceGaps") or []
+    summary   = data.get("ComplianceSummary") or {}
+    certs     = [c for c in (data.get("ExpiringCertificates") or [])
+                 if c.get("DaysRemaining") is not None]
+    zerodays  = data.get("ZeroDays") or []
+    freshness = data.get("Freshness") or {}
+
+    gap_sev  = _sev_counts(gaps)
+    cert_sev = _sev_counts(certs)
+
+    # Anomaly severity: use Severity when present, else treat as High.
+    an_sev = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0}
+    for a in anomalies:
+        s = a.get("Severity") if a.get("Severity") in an_sev else "High"
+        an_sev[s] += 1
+
+    # Zero-day severity: ransomware-linked = Critical, otherwise High.
+    zd_sev = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0}
+    for z in zerodays:
+        if str(z.get("KnownRansomwareCampaignUse", "")).lower() == "known":
+            zd_sev["Critical"] += 1
+        else:
+            zd_sev["High"] += 1
+
+    total_sev = {k: gap_sev[k] + cert_sev[k] + an_sev[k] + zd_sev[k] for k in gap_sev}
+    score = summary.get("ScorePct")
+
+    posture = "good"
+    if total_sev["Critical"] > 0:
+        posture = "critical"
+    elif total_sev["High"] > 0 or (score is not None and score < 80):
+        posture = "warn"
+
+    # Anomalies grouped by type.
+    an_types: dict = {}
+    for a in anomalies:
+        t = a.get("Type", "Unknown")
+        an_types[t] = an_types.get(t, 0) + 1
+    an_types_sorted = sorted(an_types.items(), key=lambda kv: -kv[1])
+
+    def _csort(c):
+        return (SEV_RANK.get(c.get("Severity", "Low"), 9), c.get("DaysRemaining", 9999))
+
+    certs_sorted = sorted(certs, key=_csort)
+    certs_under_30 = [c for c in certs if isinstance(c.get("DaysRemaining"), (int, float))
+                      and c.get("DaysRemaining") < 30]
+    gaps_sorted = sorted(gaps, key=lambda g: (SEV_RANK.get(g.get("Severity", "Low"), 9),
+                                              g.get("ControlId", "")))
+
+    return {
+        "demo": demo,
+        "generated": datetime.utcnow().isoformat(),
+        "freshness": freshness,
+        "kpi": {
+            "anomalies": len(anomalies),
+            "compliance_score": score,
+            "compliance_passed": summary.get("Passed", 0),
+            "compliance_total": summary.get("TotalControls", 0),
+            "zerodays": len(zerodays),
+            "certs": len(certs),
+            "certs_urgent": len(certs_under_30),
+        },
+        "posture": posture,
+        "severity_totals": total_sev,
+        "compliance": {
+            "summary": summary,
+            "gaps_by_severity": gap_sev,
+            "top_gaps": gaps_sorted[:6],
+            "by_dc": summary.get("ByDC", []),
+        },
+        "threats": {
+            "anomaly_types": an_types_sorted[:6],
+            "recent_anomalies": anomalies[:7],
+            "zerodays": zerodays[:6],
+        },
+        "certificates": {
+            "by_severity": cert_sev,
+            "soonest": certs_sorted[:8],
+            "urgent_count": len(certs_under_30),
+        },
     }
 
 
@@ -163,6 +292,18 @@ def _mock_result(dcs: list[str]) -> dict:
 @app.route("/")
 def index():
     return render_template("index.html")
+
+
+@app.route("/dashboard")
+def dashboard():
+    """Full-screen rotating operations dashboard (for a NOC/wall display)."""
+    return render_template("dashboard.html")
+
+
+@app.route("/api/dashboard")
+def api_dashboard():
+    """JSON aggregates powering the rotating dashboard; polled periodically by the page."""
+    return jsonify(_dashboard_payload())
 
 
 @app.route("/scan", methods=["POST"])

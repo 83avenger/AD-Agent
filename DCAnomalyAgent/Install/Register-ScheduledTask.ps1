@@ -48,7 +48,7 @@ Write-Host "Scheduled task '$TaskName' registered to run at: $($TriggerTimes -jo
 
 # ── Compliance scan task (runs once daily, separate from anomaly scan) ────────
 $complianceAction = New-ScheduledTaskAction -Execute 'powershell.exe' `
-    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`" -ComplianceScan"
+    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`" -ComplianceScan -SkipAnomalyScan"
 
 $complianceTrigger = New-ScheduledTaskTrigger -Daily -At '07:00'
 
@@ -60,7 +60,7 @@ Write-Host "Compliance task '$TaskName-Compliance' registered to run daily at 07
 
 # ── Zero-day telemetry task (runs once daily) ─────────────────────────────────
 $zeroDayAction = New-ScheduledTaskAction -Execute 'powershell.exe' `
-    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`" -ZeroDayScan"
+    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`" -ZeroDayScan -SkipAnomalyScan"
 
 $zeroDayTrigger = New-ScheduledTaskTrigger -Daily -At '08:00'
 
@@ -72,7 +72,7 @@ Write-Host "Zero-day task '$TaskName-ZeroDay' registered to run daily at 08:00 u
 
 # ── Certificate expiry task (runs once daily) ─────────────────────────────────
 $certAction = New-ScheduledTaskAction -Execute 'powershell.exe' `
-    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`" -CertificateScan"
+    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`" -CertificateScan -SkipAnomalyScan"
 
 $certTrigger = New-ScheduledTaskTrigger -Daily -At '09:00'
 

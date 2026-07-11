@@ -172,5 +172,12 @@
         ReportOutputPath = "$PSScriptRoot\..\State\certificate-report.md"
     }
 
+    # Rotating dashboard snapshot. Every scan run merges its section(s) into this
+    # file; the web UI dashboard reads it. Because each scheduled task runs one
+    # scan type, the merge preserves the other sections from prior runs.
+    Dashboard = @{
+        SnapshotPath = "$PSScriptRoot\..\State\latest-scan.json"
+    }
+
     LogPath = "$PSScriptRoot\..\State\scan.log"
 }

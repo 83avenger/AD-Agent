@@ -31,6 +31,10 @@ param(
     [switch]$ComplianceScan,
     [switch]$ZeroDayScan,
     [switch]$CertificateScan,
+    # Skip the event-log anomaly scan. Used by the compliance/zero-day/certificate
+    # Scheduled Tasks so they don't each re-run (and re-report) the anomaly scan
+    # that the dedicated anomaly task already covers 3x/day.
+    [switch]$SkipAnomalyScan,
     [switch]$TestEmail,
     [string[]]$FrameworkFilter,
     [ValidateSet('Critical','High','Medium','Low')][string[]]$SeverityFilter,
@@ -113,9 +117,12 @@ if ($TestEmail) {
 # ─────────────────────────────────────────────────────────────────────────────
 # ANOMALY SCAN
 # ─────────────────────────────────────────────────────────────────────────────
+$allAnomalies = @()
+if ($SkipAnomalyScan) {
+    Write-ScanLog "Anomaly scan skipped (-SkipAnomalyScan)."
+} else {
 $endTime = $scanTime
 $startTime = $endTime.AddHours(-$config.LookbackHours)
-$allAnomalies = @()
 $allSuccessfulLogons = @()
 
 $baseline = Get-Baseline -StatePath $config.Baseline.StatePath
@@ -174,6 +181,7 @@ if (-not $DryRun -and $allAnomalies.Count -gt 0) {
         Send-EmailAlert -EmailConfig $config.Reporting.Email -Anomalies $allAnomalies
     }
 }
+} # end anomaly scan (-not $SkipAnomalyScan)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # COMPLIANCE SCAN
@@ -258,6 +266,7 @@ if ($ComplianceScan -and $config.Compliance.Enabled) {
 # ─────────────────────────────────────────────────────────────────────────────
 # ZERO-DAY SCAN
 # ─────────────────────────────────────────────────────────────────────────────
+$dashboardZeroDays = @()
 $runZeroDay = $ZeroDayScan -or ($config.ZeroDay -and $config.ZeroDay.Enabled -and $config.ZeroDay.AlertOnNew)
 if ($runZeroDay) {
     Write-ScanLog "Starting zero-day telemetry scan..."
@@ -277,6 +286,7 @@ if ($runZeroDay) {
             $newZeroDays += $dueSoon | Where-Object { $_.CveId -notin $existingIds }
         }
 
+        $dashboardZeroDays = @($newZeroDays)
         Write-ScanLog "Zero-day scan complete: $($zdMatches.Count) total match(es), $($newZeroDays.Count) new/due-soon alert(s)."
 
         if ($DryRun) {
@@ -388,6 +398,54 @@ if ($runCertScan) {
                 -Certificates $expiringCerts -ScanTime $scanTime
         }
     }
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DASHBOARD SNAPSHOT (merged across scan types)
+# Each scheduled task runs a single scan type, so we merge this run's sections
+# into the persisted snapshot rather than overwriting — the rotating dashboard
+# then shows every scan type even though they run in separate tasks.
+# ─────────────────────────────────────────────────────────────────────────────
+try {
+    $snapshotPath = if ($config.Dashboard -and $config.Dashboard.SnapshotPath) {
+        $config.Dashboard.SnapshotPath
+    } else {
+        "$PSScriptRoot\State\latest-scan.json"
+    }
+    $snapDir = Split-Path -Path $snapshotPath -Parent
+    if (-not (Test-Path $snapDir)) { New-Item -ItemType Directory -Path $snapDir -Force | Out-Null }
+
+    $prev = $null
+    if (Test-Path $snapshotPath) {
+        try { $prev = Get-Content -Path $snapshotPath -Raw | ConvertFrom-Json } catch { $prev = $null }
+    }
+    $prevFresh = if ($prev -and $prev.Freshness) { $prev.Freshness } else { [pscustomobject]@{} }
+    $nowIso = $scanTime.ToString('o')
+
+    $ranAnomaly    = -not $SkipAnomalyScan
+    $ranCompliance = $ComplianceScan -and $config.Compliance.Enabled
+    $ranCert       = $runCertScan
+    $ranZeroDay    = $runZeroDay
+
+    $snapshot = [ordered]@{
+        ScanTime             = $nowIso
+        Anomalies            = if ($ranAnomaly)    { @($allAnomalies) }   elseif ($prev) { @($prev.Anomalies) }            else { @() }
+        ComplianceGaps       = if ($ranCompliance) { @($complianceGaps) } elseif ($prev) { @($prev.ComplianceGaps) }       else { @() }
+        ComplianceSummary    = if ($ranCompliance) { $complianceSummary } elseif ($prev) { $prev.ComplianceSummary }        else { $null }
+        ExpiringCertificates = if ($ranCert)       { @($expiringCerts) }  elseif ($prev) { @($prev.ExpiringCertificates) }  else { @() }
+        ZeroDays             = if ($ranZeroDay)    { @($dashboardZeroDays) } elseif ($prev) { @($prev.ZeroDays) }           else { @() }
+        Freshness            = [ordered]@{
+            Anomalies    = if ($ranAnomaly)    { $nowIso } else { $prevFresh.Anomalies }
+            Compliance   = if ($ranCompliance) { $nowIso } else { $prevFresh.Compliance }
+            Certificates = if ($ranCert)       { $nowIso } else { $prevFresh.Certificates }
+            ZeroDay      = if ($ranZeroDay)    { $nowIso } else { $prevFresh.ZeroDay }
+        }
+    }
+
+    $snapshot | ConvertTo-Json -Depth 8 | Set-Content -Path $snapshotPath -Encoding UTF8
+    Write-ScanLog "Dashboard snapshot updated: $snapshotPath"
+} catch {
+    Write-ScanLog "WARN (dashboard snapshot): $_"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────

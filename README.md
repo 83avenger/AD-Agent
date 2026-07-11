@@ -13,6 +13,7 @@ A one-stop security services platform for Windows/AD environments, built in Powe
 | Certificate expiry | Machine stores + TLS endpoints + Enterprise CA, flags certs expiring within 90 days | `Run-AnomalyScan.ps1 -CertificateScan` |
 | Asset inventory | AD + network discovery and classification | `Run-Discovery.ps1` |
 | Reporting & alerting | Teams, SharePoint, email, markdown, PDF/CSV | automatic / web UI |
+| Live dashboard | Rotating NOC wall display cycling 4 screens across all scan types | `/dashboard` (web UI) |
 
 ---
 
@@ -140,7 +141,7 @@ Outputs `State/asset-inventory.json`, `asset-inventory.csv`, and a ready-to-past
 cd ..\WebApp
 pip install -r requirements.txt
 python app.py
-# Browse to http://localhost:5000
+# Browse to http://localhost:5000  ·  Rotating dashboard at http://localhost:5000/dashboard
 ```
 
 ---
@@ -292,6 +293,21 @@ Findings are reported to Teams, email, and a dedicated SharePoint list (`Certifi
 
 ---
 
+## Live rotating dashboard
+
+A full-screen operations dashboard for a NOC/wall display, at **`/dashboard`** in the web UI. It auto-rotates through **4 screens** every 13 seconds:
+
+1. **Executive Overview** — posture banner + KPI tiles (anomalies, compliance score, zero-day alerts, expiring certs) and an all-sources severity bar
+2. **Compliance Posture** — score gauge, gaps by severity, top failing controls, per-asset breakdown
+3. **Threats & Anomalies** — anomalies by type, recent anomalies, zero-day CVE watchlist (ransomware-flagged)
+4. **Certificate Expiry** — severity split, soonest-to-expire countdown, count expiring < 30 days
+
+Controls: `Space` pauses rotation, `←`/`→` navigate, `F` toggles fullscreen; hovering the stage pauses so operators can read. The page polls `/api/dashboard` every 3 minutes for fresh data.
+
+**Data source.** Every scan run merges its results into `State/latest-scan.json` (configurable via `Dashboard.SnapshotPath`). Because each scheduled task runs a single scan type, the merge *preserves the other sections* — so the dashboard always shows all four areas even though anomaly, compliance, zero-day, and certificate scans run in separate tasks. If no snapshot exists yet, the dashboard shows clearly-labelled demo data.
+
+---
+
 ## Scheduling
 
 ```powershell
@@ -304,9 +320,11 @@ Creates these Scheduled Tasks under the gMSA:
 | Task | Schedule | Command |
 |---|---|---|
 | `DCAnomalyAgent-Scan` | 06:00, 14:00, 22:00 | Anomaly scan only |
-| `DCAnomalyAgent-Scan-Compliance` | Daily 07:00 | Anomaly + full compliance scan |
-| `DCAnomalyAgent-Scan-ZeroDay` | Daily 08:00 | CISA KEV + NVD zero-day feed pull |
-| `DCAnomalyAgent-Scan-Certificates` | Daily 09:00 | Certificate expiry scan (stores/TLS/CA) |
+| `DCAnomalyAgent-Scan-Compliance` | Daily 07:00 | Compliance scan (`-SkipAnomalyScan`) |
+| `DCAnomalyAgent-Scan-ZeroDay` | Daily 08:00 | Zero-day feed pull (`-SkipAnomalyScan`) |
+| `DCAnomalyAgent-Scan-Certificates` | Daily 09:00 | Certificate expiry scan (`-SkipAnomalyScan`) |
+
+> The compliance, zero-day, and certificate tasks pass **`-SkipAnomalyScan`** so they don't each re-run and re-report the event-log anomaly scan that the dedicated anomaly task already covers 3×/day. Each still contributes its section to the dashboard snapshot.
 
 ---
 
