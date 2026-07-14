@@ -204,6 +204,35 @@ security/IT team can reach it.
 
 ---
 
+## 10a. Sharing access with other users on the network (optional)
+
+The jump server install above is the primary, always-on instance. If other
+users on the network need read-only/reference access to run scans or view
+past reports (not just the person who installed it), keep these points in
+mind rather than exposing the raw Flask/waitress port:
+
+- **Bind the app to loopback only** (`--host 127.0.0.1`, as in step 8/9) and
+  put all shared access behind the reverse proxy from step 10. Never point
+  `start.py --host 0.0.0.0` directly at the network — there is no built-in
+  authentication on the Flask app itself.
+- **Authenticate at the proxy**, not the app. With IIS use Windows
+  Integrated Auth on the site binding; with Caddy, add `basicauth` or front
+  it with your SSO/reverse-proxy of choice. Only authenticated users should
+  reach `adagent.contoso.com`.
+- **Scope who can run scans vs. who can only view reports.** This app has no
+  built-in RBAC — anyone who can reach the URL can trigger a scan under the
+  service gMSA's permissions. If you want a "reference-only" audience, put
+  them behind an IP allow-list or auth group that's separate from the group
+  allowed to trigger new scans, or point them at a read-only file share of
+  the generated PDF/CSV reports (`DCAnomalyAgent\State\`) instead of the
+  live UI.
+- **Reports may contain sensitive AD data** (account names, group
+  memberships, policy findings). Treat the shared endpoint and any report
+  share the same as you would treat AD admin tooling — internal network
+  only, no exposure to the internet, and access logged.
+
+---
+
 ## 11. Schedule the unattended scans (separate from the UI)
 
 The web UI is for **on-demand** scans. For the recurring 2–3x/day scans, register
