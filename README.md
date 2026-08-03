@@ -352,6 +352,7 @@ Pester 5.x required. Tests mock WinRM and AD cmdlets — no live DC needed.
 
 | Guide | When to use |
 |---|---|
+| [IMPLEMENTATION-GUIDE.md](IMPLEMENTATION-GUIDE.md) | **Full step-by-step runbook** — phased deployment from a clean jump server to scheduled, dashboard-backed operations, with per-step verification |
 | [DEPLOYMENT.md](DEPLOYMENT.md) | Jump server with internet access |
 | [DEPLOYMENT-OFFLINE.md](DEPLOYMENT-OFFLINE.md) | Air-gapped / no-internet environment — includes all download URLs and full GPO least-privilege config |
 | [DCAnomalyAgent/COMPLIANCE-OTHER-ASSETS.md](DCAnomalyAgent/COMPLIANCE-OTHER-ASSETS.md) | Extending compliance scans to member servers, workstations, and Linux hosts |
