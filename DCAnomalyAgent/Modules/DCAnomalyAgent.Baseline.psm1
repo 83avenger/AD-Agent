@@ -8,6 +8,16 @@ function Get-Baseline {
         $raw = Get-Content -Path $StatePath -Raw | ConvertFrom-Json
         $baseline = @{}
         foreach ($prop in $raw.PSObject.Properties) {
+            # '__gpoVersions' is not a per-user profile - it's an array of {Id;Version}
+            # GPO version records (see Save-Baseline/Run-AnomalyScan.ps1). Reshaping it
+            # into the per-user Hours/SourceHosts/... shape below would corrupt it and
+            # crash the GPO-drift check on the next run. Pass it through as-is.
+            if ($prop.Name -eq '__gpoVersions') {
+                $baseline[$prop.Name] = @($prop.Value | ForEach-Object {
+                    @{ Id = $_.Id; Version = $_.Version }
+                })
+                continue
+            }
             $baseline[$prop.Name] = @{
                 Hours          = [int[]]$prop.Value.Hours
                 SourceHosts    = [string[]]$prop.Value.SourceHosts

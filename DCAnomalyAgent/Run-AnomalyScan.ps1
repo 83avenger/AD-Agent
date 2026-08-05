@@ -139,7 +139,10 @@ $allSuccessfulLogons = @()
 $baseline = Get-Baseline -StatePath $config.Baseline.StatePath
 $knownGpoVersions = @{}
 if ($baseline.ContainsKey('__gpoVersions')) {
-    foreach ($entry in $baseline['__gpoVersions']) { $knownGpoVersions[$entry.Id] = $entry.Version }
+    # Defensive: skip any malformed/legacy entry rather than indexing with a null key.
+    foreach ($entry in @($baseline['__gpoVersions'])) {
+        if ($entry -and $entry.Id) { $knownGpoVersions[$entry.Id] = $entry.Version }
+    }
 }
 
 foreach ($dc in $config.DomainControllers) {
