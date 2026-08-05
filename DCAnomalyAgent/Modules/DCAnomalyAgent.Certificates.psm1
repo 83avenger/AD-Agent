@@ -1,9 +1,9 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Certificate expiry scanning. Collects certificates from three sources —
+    Certificate expiry scanning. Collects certificates from three sources -
     Windows machine stores (over WinRM), live TLS endpoints (socket probe), and
-    an AD Certificate Services / Enterprise CA (certutil) — then flags any that
+    an AD Certificate Services / Enterprise CA (certutil) - then flags any that
     expire within a configurable threshold (default 90 days).
 
 .DESCRIPTION
@@ -125,7 +125,7 @@ function Get-EndpointCertificate {
     .SYNOPSIS
         Retrieves the server certificate presented by a TLS endpoint via socket probe.
     .DESCRIPTION
-        Does NOT validate the trust chain — the callback accepts any cert so we can
+        Does NOT validate the trust chain - the callback accepts any cert so we can
         inspect even self-signed / expired certs. Reuses the SslStream pattern from
         the OWASP compliance control OW-TLS-001.
     #>

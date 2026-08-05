@@ -209,7 +209,7 @@ function Format-ComplianceReport {
 
     foreach ($gap in $sortedGaps) {
         $frameworkLabels = ($gap.Frameworks.GetEnumerator() | ForEach-Object { "$($_.Key): $($_.Value)" }) -join ' | '
-        $null = $sb.AppendLine("### [$($gap.Severity)] $($gap.ControlId) — $($gap.Title)")
+        $null = $sb.AppendLine("### [$($gap.Severity)] $($gap.ControlId) - $($gap.Title)")
         $null = $sb.AppendLine("**DC:** $($gap.ComputerName)  ")
         $null = $sb.AppendLine("**Frameworks:** $frameworkLabels  ")
         $null = $sb.AppendLine("**Expected:** $($gap.Expected)  ")

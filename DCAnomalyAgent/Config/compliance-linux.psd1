@@ -1,6 +1,6 @@
 @{
-    # ─────────────────────────────────────────────────────────────────────────
-    # Linux / Unix compliance controls — CIS Distribution Independent Linux
+    # -------------------------------------------------------------------------
+    # Linux / Unix compliance controls - CIS Distribution Independent Linux
     # benchmark subset, mapped to NIST 800-53 and ISO 27001.
     #
     # Transport: SSH (not WinRM). Each Check receives a second argument $Ctx with
@@ -13,10 +13,10 @@
     #   - the scan user is unprivileged; checks that need root use sudo NOPASSWD
     #     for the specific read-only commands, OR rely on world-readable config.
     #     The controls below favour world-readable files to avoid needing sudo.
-    # ─────────────────────────────────────────────────────────────────────────
+    # -------------------------------------------------------------------------
     Controls = @(
 
-        # ── SSH HARDENING ────────────────────────────────────────────────────
+        # -- SSH HARDENING ----------------------------------------------------
         @{
             Id          = 'LX-SSH-001'
             Title       = 'SSH PermitRootLogin Disabled'
@@ -53,7 +53,7 @@
             Remediation = 'Set "PasswordAuthentication no" in /etc/ssh/sshd_config (ensure key-based access works first) and restart sshd.'
         }
 
-        # ── FIREWALL ─────────────────────────────────────────────────────────
+        # -- FIREWALL ---------------------------------------------------------
         @{
             Id          = 'LX-FW-001'
             Title       = 'Host Firewall Active (ufw / firewalld / nftables)'
@@ -72,7 +72,7 @@
             Remediation = 'Enable a host firewall: "systemctl enable --now firewalld" (RHEL) or "ufw enable" (Debian/Ubuntu) with a default-deny inbound policy.'
         }
 
-        # ── AUDITING ─────────────────────────────────────────────────────────
+        # -- AUDITING ---------------------------------------------------------
         @{
             Id          = 'LX-AU-001'
             Title       = 'auditd Service Running'
@@ -91,7 +91,7 @@
             Remediation = 'Install and enable auditd: "yum install audit" / "apt install auditd", then "systemctl enable --now auditd".'
         }
 
-        # ── MANDATORY ACCESS CONTROL ─────────────────────────────────────────
+        # -- MANDATORY ACCESS CONTROL -----------------------------------------
         @{
             Id          = 'LX-MAC-001'
             Title       = 'SELinux or AppArmor Enforcing'
@@ -111,7 +111,7 @@
             Remediation = 'Enable SELinux (set SELINUX=enforcing in /etc/selinux/config, relabel, reboot) or AppArmor ("systemctl enable --now apparmor").'
         }
 
-        # ── PASSWORD POLICY ──────────────────────────────────────────────────
+        # -- PASSWORD POLICY --------------------------------------------------
         @{
             Id          = 'LX-PW-001'
             Title       = 'Password Max Age <= 365 days (PASS_MAX_DAYS)'
@@ -131,7 +131,7 @@
             Remediation = 'Set "PASS_MAX_DAYS 365" (or less) in /etc/login.defs and apply to existing users with chage.'
         }
 
-        # ── LEGACY SERVICES ──────────────────────────────────────────────────
+        # -- LEGACY SERVICES --------------------------------------------------
         @{
             Id          = 'LX-SVC-001'
             Title       = 'Legacy Insecure Services Not Installed (telnet, rsh, ftp)'
@@ -150,7 +150,7 @@
             Remediation = 'Remove/disable legacy cleartext services: "systemctl disable --now telnet.socket rsh.socket vsftpd" and uninstall the packages.'
         }
 
-        # ── PATCHING ─────────────────────────────────────────────────────────
+        # -- PATCHING ---------------------------------------------------------
         @{
             Id          = 'LX-PATCH-001'
             Title       = 'No Pending Security Updates'

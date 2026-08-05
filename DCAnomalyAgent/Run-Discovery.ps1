@@ -34,7 +34,17 @@ param(
 $ErrorActionPreference = 'Stop'
 Import-Module "$PSScriptRoot\Modules\DCAnomalyAgent.Discovery.psm1" -Force
 
-$config = Import-PowerShellDataFile -Path $ConfigPath
+function Import-AgentConfig {
+    # Resolves $PSScriptRoot in settings.psd1 to its own directory (Import-PowerShellDataFile
+    # leaves it empty), so the relative paths in the config load correctly.
+    param([Parameter(Mandatory)][string]$Path)
+    $resolved = (Resolve-Path -Path $Path).Path
+    $dir  = Split-Path -Parent $resolved
+    $text = (Get-Content -Raw -Path $resolved).Replace('$PSScriptRoot', $dir)
+    return (& ([scriptblock]::Create($text)))
+}
+
+$config = Import-AgentConfig -Path $ConfigPath
 
 # Fall back to configured Discovery settings if no switches passed
 if (-not $FromAD -and -not $Cidr) {

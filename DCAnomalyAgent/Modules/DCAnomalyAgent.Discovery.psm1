@@ -1,14 +1,14 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Asset discovery — enumerates hosts from Active Directory and/or by scanning the
+    Asset discovery - enumerates hosts from Active Directory and/or by scanning the
     network, classifies them by OS/role, and emits an inventory suitable for feeding
     the compliance scanner's asset lists.
 
 .DESCRIPTION
     Two discovery sources:
-      1. Active Directory  (Get-ADAsset)      — authoritative for domain-joined hosts
-      2. Network scan      (Get-NetworkAsset) — finds anything reachable, incl. non-domain
+      1. Active Directory  (Get-ADAsset)      - authoritative for domain-joined hosts
+      2. Network scan      (Get-NetworkAsset) - finds anything reachable, incl. non-domain
                                                  and non-Windows (Linux/appliances)
 
     Classification heuristics by open port / AD attribute:
@@ -88,7 +88,7 @@ function Test-TcpPort {
 function Expand-Cidr {
     <#
     .SYNOPSIS
-        Expand a CIDR (e.g. 10.0.0.0/24) into individual host IPs. Supports /16–/32.
+        Expand a CIDR (e.g. 10.0.0.0/24) into individual host IPs. Supports /16-/32.
     #>
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Cidr)
@@ -97,7 +97,7 @@ function Expand-Cidr {
         throw "Invalid CIDR: $Cidr"
     }
     $baseIp = $Matches[1]; $prefix = [int]$Matches[2]
-    if ($prefix -lt 16 -or $prefix -gt 32) { throw "Prefix /$prefix out of supported range (/16–/32)." }
+    if ($prefix -lt 16 -or $prefix -gt 32) { throw "Prefix /$prefix out of supported range (/16-/32)." }
 
     $ipBytes  = [System.Net.IPAddress]::Parse($baseIp).GetAddressBytes()
     [Array]::Reverse($ipBytes)
@@ -213,7 +213,7 @@ function Merge-AssetInventory {
     foreach ($n in $NetworkAssets) {
         $key = ($n.Name -split '\.')[0].ToLower()
         if ($byName.ContainsKey($key)) {
-            # AD already has it — annotate with discovered open ports
+            # AD already has it - annotate with discovered open ports
             $byName[$key] | Add-Member -NotePropertyName OpenPorts -NotePropertyValue $n.OpenPorts -Force
             $byName[$key] | Add-Member -NotePropertyName Source -NotePropertyValue 'AD+NetworkScan' -Force
         } else {

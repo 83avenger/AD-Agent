@@ -122,7 +122,7 @@ function Get-ZeroDayMatches {
         }
     }
 
-    # --- NVD (secondary — only for products not already covered by KEV) ---
+    # --- NVD (secondary - only for products not already covered by KEV) ---
     $kevCveIds = $matches | Select-Object -ExpandProperty CveId
     $nvdResults = Get-NvdCveFeed -Products $watchList -Config $Config
     foreach ($nvd in $nvdResults) {
@@ -131,31 +131,36 @@ function Get-ZeroDayMatches {
         }
     }
 
-    return $matches
+    # Unary comma preserves an empty array through return (PowerShell otherwise
+    # unrolls @() to $null, which would break the caller when there are 0 matches).
+    return ,$matches
 }
 
 function Update-ZeroDayBaseline {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][array]$Matches,
+        # May be $null/empty when the feeds are unreachable or matched nothing.
+        [Parameter(Mandatory)][AllowNull()][AllowEmptyCollection()][array]$Matches,
         [Parameter(Mandatory)][string]$CacheDir
     )
+
+    if (-not $Matches) { return @() }
 
     $baselineFile = Join-Path $CacheDir 'zeroday-baseline.json'
     $seenIds = @()
 
     if (Test-Path $baselineFile) {
-        $seenIds = (Get-Content $baselineFile -Raw | ConvertFrom-Json)
+        $seenIds = @(Get-Content $baselineFile -Raw | ConvertFrom-Json)
     }
 
-    $newMatches = $Matches | Where-Object { $_.CveId -notin $seenIds }
+    $newMatches = @($Matches | Where-Object { $_.CveId -notin $seenIds })
 
     if ($newMatches.Count -gt 0) {
         $allIds = @($seenIds) + @($newMatches | Select-Object -ExpandProperty CveId) | Select-Object -Unique
         $allIds | ConvertTo-Json | Set-Content -Path $baselineFile -Encoding UTF8
     }
 
-    return $newMatches
+    return ,$newMatches
 }
 
 Export-ModuleMember -Function Get-CisaKevFeed, Get-NvdCveFeed, Get-ZeroDayMatches, Update-ZeroDayBaseline

@@ -1,9 +1,9 @@
 @{
     Controls = @(
 
-        # ─────────────────────────────────────────────────────────────────
+        # -----------------------------------------------------------------
         # PASSWORD POLICY
-        # ─────────────────────────────────────────────────────────────────
+        # -----------------------------------------------------------------
         @{
             Id          = 'PP-001'
             Title       = 'Minimum Password Length >= 14 characters'
@@ -79,9 +79,9 @@
             Remediation = 'Disable "Store passwords using reversible encryption" in Default Domain Policy > Password Policy immediately; enforce a password reset cycle afterwards.'
         }
 
-        # ─────────────────────────────────────────────────────────────────
+        # -----------------------------------------------------------------
         # ACCOUNT LOCKOUT POLICY
-        # ─────────────────────────────────────────────────────────────────
+        # -----------------------------------------------------------------
         @{
             Id          = 'AL-001'
             Title       = 'Account Lockout Threshold <= 10 attempts'
@@ -112,9 +112,9 @@
             Remediation = 'Set Account lockout duration >= 15 minutes in Default Domain Policy > Account Lockout Policy.'
         }
 
-        # ─────────────────────────────────────────────────────────────────
+        # -----------------------------------------------------------------
         # AUDIT POLICY
-        # ─────────────────────────────────────────────────────────────────
+        # -----------------------------------------------------------------
         @{
             Id          = 'AU-001'
             Title       = 'Audit Account Logon Events (Success + Failure)'
@@ -183,9 +183,9 @@
             Remediation = 'Configure via GPO: Advanced Audit Policy > Privilege Use > Sensitive Privilege Use = Success and Failure.'
         }
 
-        # ─────────────────────────────────────────────────────────────────
+        # -----------------------------------------------------------------
         # NETWORK / PROTOCOL HARDENING
-        # ─────────────────────────────────────────────────────────────────
+        # -----------------------------------------------------------------
         @{
             Id          = 'NT-001'
             Title       = 'SMB Signing Required'
@@ -251,9 +251,9 @@
             Remediation = 'Create a HTTPS listener: New-WSManInstance winrm/config/Listener -SelectorSet @{Transport="HTTPS"} -ValueSet @{CertificateThumbprint="<thumbprint>"}. Bind a valid server cert.'
         }
 
-        # ─────────────────────────────────────────────────────────────────
+        # -----------------------------------------------------------------
         # PRIVILEGED ACCESS
-        # ─────────────────────────────────────────────────────────────────
+        # -----------------------------------------------------------------
         @{
             Id          = 'PA-001'
             Title       = 'Domain Admins Group Has <= 5 Members'
@@ -322,9 +322,9 @@
             Remediation = 'Remove service accounts from Domain Admins immediately. Grant only the minimum AD permissions required, scoped to the specific OU/object they need.'
         }
 
-        # ─────────────────────────────────────────────────────────────────
+        # -----------------------------------------------------------------
         # KERBEROS
-        # ─────────────────────────────────────────────────────────────────
+        # -----------------------------------------------------------------
         @{
             Id          = 'KB-001'
             Title       = 'Kerberos Max Ticket Lifetime <= 10 Hours'
@@ -343,9 +343,9 @@
             Remediation = 'Set via Default Domain Policy: Account Policies > Kerberos Policy > Maximum lifetime for user ticket = 10 hours or less.'
         }
 
-        # ─────────────────────────────────────────────────────────────────
+        # -----------------------------------------------------------------
         # DOMAIN / FOREST
-        # ─────────────────────────────────────────────────────────────────
+        # -----------------------------------------------------------------
         @{
             Id          = 'DF-001'
             Title       = 'Domain Functional Level >= Windows Server 2012 R2'

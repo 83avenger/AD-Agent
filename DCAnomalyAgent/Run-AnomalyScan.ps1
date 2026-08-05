@@ -49,6 +49,17 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+function Import-AgentConfig {
+    # Loads settings.psd1. Unlike Import-PowerShellDataFile (which evaluates in a
+    # restricted mode that leaves $PSScriptRoot empty), this resolves the file's
+    # $PSScriptRoot to its own directory so the relative paths in settings.psd1 work.
+    param([Parameter(Mandatory)][string]$Path)
+    $resolved = (Resolve-Path -Path $Path).Path
+    $dir  = Split-Path -Parent $resolved
+    $text = (Get-Content -Raw -Path $resolved).Replace('$PSScriptRoot', $dir)
+    return (& ([scriptblock]::Create($text)))
+}
+
 Import-Module "$PSScriptRoot\Modules\DCAnomalyAgent.Collectors.psm1" -Force
 Import-Module "$PSScriptRoot\Modules\DCAnomalyAgent.Detectors.psm1" -Force
 Import-Module "$PSScriptRoot\Modules\DCAnomalyAgent.Baseline.psm1" -Force
@@ -60,7 +71,7 @@ if ($ZeroDayScan -or ($config -and $config.ZeroDay -and $config.ZeroDay.Enabled)
     Import-Module "$PSScriptRoot\Modules\DCAnomalyAgent.ZeroDay.psm1" -Force
 }
 
-$config = Import-PowerShellDataFile -Path $ConfigPath
+$config = Import-AgentConfig -Path $ConfigPath
 $scanTime = Get-Date
 
 # Re-check after config is loaded
@@ -70,7 +81,7 @@ if (-not (Get-Module DCAnomalyAgent.ZeroDay -ErrorAction SilentlyContinue)) {
     }
 }
 
-# Certificate scan is a heavy infrastructure sweep, so — like the compliance scan —
+# Certificate scan is a heavy infrastructure sweep, so - like the compliance scan -
 # it runs only on explicit request (-CertificateScan or the dedicated Scheduled Task),
 # gated by the Enabled master switch. It does NOT piggyback on every anomaly run.
 # Needs its own module plus Compliance (for Get-AssetTargets host resolution).
@@ -96,9 +107,9 @@ function Write-ScanLog {
     Add-Content -Path $config.LogPath -Value $line
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
-# TEST EMAIL (smoke test only — exits after sending)
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
+# TEST EMAIL (smoke test only - exits after sending)
+# -----------------------------------------------------------------------------
 if ($TestEmail) {
     $testAnomaly = [pscustomobject]@{
         Type        = 'TestAlert'
@@ -114,9 +125,9 @@ if ($TestEmail) {
     return
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # ANOMALY SCAN
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 $allAnomalies = @()
 if ($SkipAnomalyScan) {
     Write-ScanLog "Anomaly scan skipped (-SkipAnomalyScan)."
@@ -132,7 +143,7 @@ if ($baseline.ContainsKey('__gpoVersions')) {
 }
 
 foreach ($dc in $config.DomainControllers) {
-    Write-ScanLog "Anomaly scan: $dc ($startTime — $endTime)"
+    Write-ScanLog "Anomaly scan: $dc ($startTime - $endTime)"
 
     try {
         $failedLogons = Get-FailedLogonEvents -ComputerName $dc -StartTime $startTime -EndTime $endTime
@@ -183,9 +194,9 @@ if (-not $DryRun -and $allAnomalies.Count -gt 0) {
 }
 } # end anomaly scan (-not $SkipAnomalyScan)
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # COMPLIANCE SCAN
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 $complianceGaps    = $null
 $complianceSummary = $null
 if ($ComplianceScan -and $config.Compliance.Enabled) {
@@ -204,12 +215,12 @@ if ($ComplianceScan -and $config.Compliance.Enabled) {
             $targets = $TargetHostsOverride -split ',' | ForEach-Object { $_.Trim() }
         } else {
             $assetCfg = $config.Assets[$at]
-            if (-not $assetCfg) { Write-ScanLog "No asset config for '$at' — skipping."; continue }
+            if (-not $assetCfg) { Write-ScanLog "No asset config for '$at' - skipping."; continue }
             $targets = Get-AssetTargets -AssetType $at -AssetConfig $assetCfg `
                 -FallbackHosts $config.DomainControllers
         }
 
-        if (-not $targets) { Write-ScanLog "No targets resolved for '$at' — skipping."; continue }
+        if (-not $targets) { Write-ScanLog "No targets resolved for '$at' - skipping."; continue }
 
         # Select only controls applicable to this asset type
         $getControlsParams = @{ FrameworkPath = $config.Compliance.FrameworkPath; AssetTypeFilter = $at }
@@ -263,9 +274,9 @@ if ($ComplianceScan -and $config.Compliance.Enabled) {
     $complianceSummary = $summary
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # ZERO-DAY SCAN
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 $dashboardZeroDays = @()
 $runZeroDay = $ZeroDayScan -or ($config.ZeroDay -and $config.ZeroDay.Enabled -and $config.ZeroDay.AlertOnNew)
 if ($runZeroDay) {
@@ -306,9 +317,9 @@ if ($runZeroDay) {
     }
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # CERTIFICATE EXPIRY SCAN
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 $expiringCerts = @()
 if ($runCertScan) {
     Write-ScanLog "Starting certificate expiry scan..."
@@ -400,12 +411,12 @@ if ($runCertScan) {
     }
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # DASHBOARD SNAPSHOT (merged across scan types)
 # Each scheduled task runs a single scan type, so we merge this run's sections
-# into the persisted snapshot rather than overwriting — the rotating dashboard
+# into the persisted snapshot rather than overwriting - the rotating dashboard
 # then shows every scan type even though they run in separate tasks.
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 try {
     $snapshotPath = if ($config.Dashboard -and $config.Dashboard.SnapshotPath) {
         $config.Dashboard.SnapshotPath
@@ -448,9 +459,9 @@ try {
     Write-ScanLog "WARN (dashboard snapshot): $_"
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # CONSOLIDATED OUTPUT
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 if ($JsonOutput) {
     $payload = [ordered]@{
         ScanTime  = $scanTime.ToString('o')

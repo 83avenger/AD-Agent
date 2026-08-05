@@ -42,7 +42,9 @@ function Update-Baseline {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][hashtable]$Baseline,
-        [Parameter(Mandatory)][array]$LogonEvents,
+        # Allow an empty set: a quiet scan window (or all DCs unreachable) yields no
+        # successful-logon events, which must not crash the run.
+        [Parameter(Mandatory)][AllowEmptyCollection()][array]$LogonEvents,
         [Parameter(Mandatory)][int]$MinObservationsBeforeFlagging
     )
 

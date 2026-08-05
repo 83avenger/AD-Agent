@@ -112,7 +112,7 @@ Describe 'Find-ExpiringCertificates error handling' {
 
 Describe 'Get-EndpointCertificate resilience' {
     It 'records an error object (not a throw) for an unreachable endpoint' {
-        # 192.0.2.1 is TEST-NET-1 (RFC 5737) — guaranteed unreachable
+        # 192.0.2.1 is TEST-NET-1 (RFC 5737) - guaranteed unreachable
         $r = Get-EndpointCertificate -TargetHost '192.0.2.1' -Port 9 -TimeoutMs 500
         $r.Source | Should -Be 'TlsEndpoint'
         $r.Error  | Should -Not -BeNullOrEmpty

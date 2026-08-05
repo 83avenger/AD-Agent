@@ -90,7 +90,7 @@
         ReportOutputPath = "$PSScriptRoot\..\State\compliance-report.md"
     }
 
-    # Asset inventory — targets for compliance scanning by asset type.
+    # Asset inventory - targets for compliance scanning by asset type.
     # Each AssetType runs only the controls whose AppliesTo includes that type.
     # You can list hosts explicitly, or set DiscoverFromAD = $true to auto-enumerate.
     Assets = @{
@@ -119,7 +119,7 @@
             }
         }
         WebApplication = @{
-            # HTTPS endpoints for OWASP posture checks — probed directly from the
+            # HTTPS endpoints for OWASP posture checks - probed directly from the
             # jump server (headers/TLS/cookies), no agent or credentials needed.
             # Bare hostnames are probed as https://<host>.
             Hosts         = @('https://intranet.contoso.com')
@@ -138,7 +138,7 @@
     # queries NVD for additional coverage. Alerts only on CVEs newly added since the last run.
     ZeroDay = @{
         Enabled          = $true
-        # Set $true on air-gapped servers — reads State\kev-cache.json instead of fetching live.
+        # Set $true on air-gapped servers - reads State\kev-cache.json instead of fetching live.
         Offline          = $false
         ProductsPath     = "$PSScriptRoot\zeroday-products.psd1"
         CacheDir         = "$PSScriptRoot\..\State"
@@ -164,7 +164,7 @@
         # WebApplication host from the Assets block.
         ProbeDcLdaps   = $true
         ProbeWebApps   = $true
-        # AD Certificate Services (optional — needs read access to the CA).
+        # AD Certificate Services (optional - needs read access to the CA).
         Adcs = @{
             Enabled  = $false
             CaConfig = ''   # e.g. 'CA01.contoso.com\Contoso-Issuing-CA'

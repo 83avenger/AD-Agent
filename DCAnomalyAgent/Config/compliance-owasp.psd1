@@ -1,20 +1,20 @@
 @{
-    # ─────────────────────────────────────────────────────────────────────────
+    # -------------------------------------------------------------------------
     # OWASP web application security controls (OWASP Top 10:2021 + ASVS v4).
     #
     # These target the 'WebApplication' asset type: HTTPS endpoints (intranet
-    # portals, APIs, appliances) probed directly from the jump server — no agent,
+    # portals, APIs, appliances) probed directly from the jump server - no agent,
     # no WinRM, no credentials. Targets are URLs or hostnames configured under
     # Assets.WebApplication.Hosts in settings.psd1; bare hostnames are probed
     # as https://<host>.
     #
-    # This is passive posture checking (headers, TLS, cookies) — NOT a DAST
+    # This is passive posture checking (headers, TLS, cookies) - NOT a DAST
     # scanner. For active testing pair with OWASP ZAP and feed results into the
     # same SharePoint list.
-    # ─────────────────────────────────────────────────────────────────────────
+    # -------------------------------------------------------------------------
     Controls = @(
 
-        # ── TRANSPORT — A02:2021 Cryptographic Failures ──────────────────────
+        # -- TRANSPORT - A02:2021 Cryptographic Failures ----------------------
         @{
             Id          = 'OW-TLS-001'
             Title       = 'Legacy TLS 1.0/1.1 Rejected by Server'
@@ -59,7 +59,7 @@
                     $resp = Invoke-WebRequest -Uri "http://$target/" -UseBasicParsing -MaximumRedirection 0 -TimeoutSec 15 -ErrorAction SilentlyContinue
                 } catch { $resp = $_.Exception.Response }
                 if (-not $resp) {
-                    # Port 80 closed entirely also passes — HTTPS-only service
+                    # Port 80 closed entirely also passes - HTTPS-only service
                     return [pscustomobject]@{ Actual = 'Port 80 unreachable (HTTPS-only)'; Pass = $true }
                 }
                 $code = [int]$resp.StatusCode
@@ -73,7 +73,7 @@
             Remediation = 'Configure a permanent redirect from HTTP to HTTPS at the web server or load balancer; do not serve content over plain HTTP.'
         }
 
-        # ── SECURITY HEADERS — A05:2021 Security Misconfiguration ────────────
+        # -- SECURITY HEADERS - A05:2021 Security Misconfiguration ------------
         @{
             Id          = 'OW-HDR-001'
             Title       = 'HSTS Header Present (Strict-Transport-Security)'
@@ -144,7 +144,7 @@
             Remediation = "Add X-Frame-Options: SAMEORIGIN, or (preferred) a CSP frame-ancestors 'self' directive."
         }
 
-        # ── INFORMATION DISCLOSURE — A05:2021 ────────────────────────────────
+        # -- INFORMATION DISCLOSURE - A05:2021 --------------------------------
         @{
             Id          = 'OW-INF-001'
             Title       = 'Server Version Not Disclosed in Response Headers'
@@ -164,7 +164,7 @@
             Remediation = 'Strip or genericize the Server header and remove X-Powered-By (IIS: removeServerHeader/requestFiltering; nginx: server_tokens off; Apache: ServerTokens Prod; PHP: expose_php=Off).'
         }
 
-        # ── SESSION — A05/A07:2021 ───────────────────────────────────────────
+        # -- SESSION - A05/A07:2021 -------------------------------------------
         @{
             Id          = 'OW-CK-001'
             Title       = 'Cookies Set With Secure and HttpOnly Flags'

@@ -120,14 +120,14 @@ function Send-TeamsComplianceReport {
         [Parameter(Mandatory)][array]$Gaps
     )
 
-    $severityIcon = @{ Critical = '🔴'; High = '🟠'; Medium = '🟡'; Low = '🔵' }
+    $severityIcon = @{ Critical = '[C]'; High = '[H]'; Medium = '[M]'; Low = '[L]' }
     $topGaps = $Gaps | Sort-Object @{
         e = { @{ Critical = 0; High = 1; Medium = 2; Low = 3 }[$_.Severity] }
     } | Select-Object -First 10
 
     $facts = $topGaps | ForEach-Object {
         @{
-            title = "$($severityIcon[$_.Severity]) [$($_.Severity)] $($_.ControlId) — $($_.Title)"
+            title = "$($severityIcon[$_.Severity]) [$($_.Severity)] $($_.ControlId) - $($_.Title)"
             value = "DC: $($_.ComputerName) | Actual: $($_.Actual)"
         }
     }
@@ -143,7 +143,7 @@ function Send-TeamsComplianceReport {
         '@context' = 'http://schema.org/extensions'
         summary    = "Compliance Scan: $($Summary.ScorePct)% ($($Summary.Failed) gap(s))"
         themeColor = $color
-        title      = "DC Compliance Report — $($Summary.ScorePct)% passing ($($Summary.Passed)/$($Summary.TotalControls) controls)"
+        title      = "DC Compliance Report - $($Summary.ScorePct)% passing ($($Summary.Passed)/$($Summary.TotalControls) controls)"
         sections   = @(
             @{
                 activityTitle = "Gaps by severity: $(($Summary.GapsBySeverity | ForEach-Object { "$($_.Severity): $($_.GapCount)" }) -join ' | ')"
@@ -187,7 +187,7 @@ function Write-SharePointComplianceItems {
             $frameworkLabels = ($gap.Frameworks.GetEnumerator() | ForEach-Object { "$($_.Key): $($_.Value)" }) -join '; '
             $body = @{
                 fields = @{
-                    Title        = "$($gap.ControlId) — $($gap.Title)"
+                    Title        = "$($gap.ControlId) - $($gap.Title)"
                     Severity     = $gap.Severity
                     Frameworks   = $frameworkLabels
                     ComputerName = $gap.ComputerName
@@ -206,7 +206,7 @@ function Write-SharePointComplianceItems {
 }
 
 
-# ─── Email helpers ────────────────────────────────────────────────────────────
+# --- Email helpers ------------------------------------------------------------
 
 function _Get-EmailCredential {
     param([hashtable]$EmailConfig)
@@ -258,13 +258,13 @@ function Send-EmailAlert {
         if (-not $filtered -and -not $EmailConfig.SendOnNoFindings) { return }
 
         $table  = _Build-HtmlTable -Rows $filtered -Columns @('Type','Account','ComputerName','TimeCreated','Detail')
-        $body   = "<h2>Domain Controller Anomaly Alert — $($Anomalies.Count) finding(s)</h2>$table"
+        $body   = "<h2>Domain Controller Anomaly Alert - $($Anomalies.Count) finding(s)</h2>$table"
         $cred   = _Get-EmailCredential -EmailConfig $EmailConfig
 
         $params = @{
             To         = $EmailConfig.To
             From       = $EmailConfig.From
-            Subject    = "[AD-Agent] Anomaly Alert — $($Anomalies.Count) finding(s) — $(Get-Date -Format 'yyyy-MM-dd HH:mm')"
+            Subject    = "[AD-Agent] Anomaly Alert - $($Anomalies.Count) finding(s) - $(Get-Date -Format 'yyyy-MM-dd HH:mm')"
             Body       = $body
             BodyAsHtml = $true
             SmtpServer = $EmailConfig.SmtpServer
@@ -295,13 +295,13 @@ function Send-EmailComplianceReport {
 
         $topGaps   = $Gaps | Sort-Object { $_SeverityOrder[$_.Severity] } | Select-Object -First 20
         $table     = _Build-HtmlTable -Rows $topGaps -Columns @('Severity','ControlId','Title','ComputerName','Actual','Remediation')
-        $body      = "<h2>Compliance Scan Report — $(Get-Date -Format 'yyyy-MM-dd')</h2>$scoreCard$table"
+        $body      = "<h2>Compliance Scan Report - $(Get-Date -Format 'yyyy-MM-dd')</h2>$scoreCard$table"
         $cred      = _Get-EmailCredential -EmailConfig $EmailConfig
 
         $params = @{
             To         = $EmailConfig.To
             From       = $EmailConfig.From
-            Subject    = "[AD-Agent] Compliance Report — $($Summary.ScorePct)% — $(Get-Date -Format 'yyyy-MM-dd')"
+            Subject    = "[AD-Agent] Compliance Report - $($Summary.ScorePct)% - $(Get-Date -Format 'yyyy-MM-dd')"
             Body       = $body
             BodyAsHtml = $true
             SmtpServer = $EmailConfig.SmtpServer
@@ -327,7 +327,7 @@ function Send-TeamsZeroDayAlert {
     $facts = $ZeroDays | ForEach-Object {
         $ransomTag = if ($_.KnownRansomwareCampaignUse -eq 'Known') { ' [RANSOMWARE]' } else { '' }
         @{
-            title = "$($_.CveId)$ransomTag — $($_.VulnerabilityName)"
+            title = "$($_.CveId)$ransomTag - $($_.VulnerabilityName)"
             value = "Product: $($_.VendorProject) / $($_.Product) | Added: $($_.DateAdded) | Due: $($_.DueDate) | $($_.RequiredAction)"
         }
     }
@@ -337,7 +337,7 @@ function Send-TeamsZeroDayAlert {
         '@context' = 'http://schema.org/extensions'
         summary    = "Zero-Day Alert: $($ZeroDays.Count) new CVE(s) match your environment"
         themeColor = 'C0392B'
-        title      = "Zero-Day Alert — $($ZeroDays.Count) new CVE(s) match your environment"
+        title      = "Zero-Day Alert - $($ZeroDays.Count) new CVE(s) match your environment"
         sections   = @(@{ activityTitle = 'Newly added to CISA KEV / NVD'; facts = $facts })
     }
 
@@ -359,13 +359,13 @@ function Send-EmailZeroDayAlert {
 
     try {
         $table  = _Build-HtmlTable -Rows $ZeroDays -Columns @('CveId','VendorProject','Product','VulnerabilityName','DateAdded','DueDate','KnownRansomwareCampaignUse','RequiredAction')
-        $body   = "<h2 style=`"color:#c0392b`">Zero-Day Alert — $($ZeroDays.Count) new CVE(s) match your environment</h2>$table"
+        $body   = "<h2 style=`"color:#c0392b`">Zero-Day Alert - $($ZeroDays.Count) new CVE(s) match your environment</h2>$table"
         $cred   = _Get-EmailCredential -EmailConfig $EmailConfig
 
         $params = @{
             To         = $EmailConfig.To
             From       = $EmailConfig.From
-            Subject    = "[AD-Agent] Zero-Day Alert — $($ZeroDays.Count) new CVE(s) — $(Get-Date -Format 'yyyy-MM-dd')"
+            Subject    = "[AD-Agent] Zero-Day Alert - $($ZeroDays.Count) new CVE(s) - $(Get-Date -Format 'yyyy-MM-dd')"
             Body       = $body
             BodyAsHtml = $true
             SmtpServer = $EmailConfig.SmtpServer
@@ -390,13 +390,13 @@ function Send-TeamsCertificateReport {
     $real = $Certificates | Where-Object { $null -ne $_.DaysRemaining }
     if (-not $real -or $real.Count -eq 0) { return }
 
-    $severityIcon = @{ Critical = '🔴'; High = '🟠'; Medium = '🟡'; Low = '🔵' }
+    $severityIcon = @{ Critical = '[C]'; High = '[H]'; Medium = '[M]'; Low = '[L]' }
     $top = $real | Sort-Object @{ e = { $_SeverityOrder[$_.Severity] } }, DaysRemaining | Select-Object -First 15
 
     $facts = $top | ForEach-Object {
         $days = if ($_.DaysRemaining -lt 0) { "EXPIRED $([math]::Abs($_.DaysRemaining))d ago" } else { "$($_.DaysRemaining)d left" }
         @{
-            title = "$($severityIcon[$_.Severity]) [$($_.Severity)] $days — $($_.Subject)"
+            title = "$($severityIcon[$_.Severity]) [$($_.Severity)] $days - $($_.Subject)"
             value = "Issuer: $($_.Issuer) | $($_.Sources) | $($_.Locations)"
         }
     }
@@ -412,7 +412,7 @@ function Send-TeamsCertificateReport {
         '@context' = 'http://schema.org/extensions'
         summary    = "Certificate Expiry: $($real.Count) cert(s) expiring within $ThresholdDays days"
         themeColor = $color
-        title      = "Certificate Expiry Report — $($real.Count) cert(s) expiring within $ThresholdDays days"
+        title      = "Certificate Expiry Report - $($real.Count) cert(s) expiring within $ThresholdDays days"
         sections   = @(@{ activityTitle = 'Sorted by urgency'; facts = $facts })
     }
 
@@ -449,13 +449,13 @@ function Send-EmailCertificateReport {
         }
         $count = @($real).Count
         $table = _Build-HtmlTable -Rows $rows -Columns @('Severity','DaysRemaining','Subject','Issuer','NotAfter','Sources','Locations')
-        $body  = "<h2 style=`"color:#c0392b`">Certificate Expiry Report — $count cert(s) expiring within $ThresholdDays days</h2>$table"
+        $body  = "<h2 style=`"color:#c0392b`">Certificate Expiry Report - $count cert(s) expiring within $ThresholdDays days</h2>$table"
         $cred  = _Get-EmailCredential -EmailConfig $EmailConfig
 
         $params = @{
             To         = $EmailConfig.To
             From       = $EmailConfig.From
-            Subject    = "[AD-Agent] Certificate Expiry — $count cert(s) within $ThresholdDays days — $(Get-Date -Format 'yyyy-MM-dd')"
+            Subject    = "[AD-Agent] Certificate Expiry - $count cert(s) within $ThresholdDays days - $(Get-Date -Format 'yyyy-MM-dd')"
             Body       = $body
             BodyAsHtml = $true
             SmtpServer = $EmailConfig.SmtpServer

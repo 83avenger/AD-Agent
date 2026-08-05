@@ -18,7 +18,7 @@
         'Microsoft NTLM'
     )
 
-    # Free NVD API key (optional — raises rate limit from 5 to 50 req/30 s).
+    # Free NVD API key (optional - raises rate limit from 5 to 50 req/30 s).
     # Request at: https://nvd.nist.gov/developers/request-an-api-key
     NvdApiKey = ''
 

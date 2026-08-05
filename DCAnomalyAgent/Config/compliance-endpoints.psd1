@@ -1,6 +1,6 @@
 @{
-    # ─────────────────────────────────────────────────────────────────────────
-    # Endpoint compliance controls — host-level checks that apply to ANY domain
+    # -------------------------------------------------------------------------
+    # Endpoint compliance controls - host-level checks that apply to ANY domain
     # member (Member Servers and Workstations), not just Domain Controllers.
     #
     # Each control declares AppliesTo = which asset types it is relevant for:
@@ -9,11 +9,11 @@
     # All checks run remotely over WinRM (Invoke-Command), the same transport the
     # DC scan uses. The scanning service account needs the same least-privilege
     # rights on these endpoints as on DCs (Remote Management Users, Event Log
-    # Readers, Remote Registry read) — apply the GPO to the relevant OUs.
-    # ─────────────────────────────────────────────────────────────────────────
+    # Readers, Remote Registry read) - apply the GPO to the relevant OUs.
+    # -------------------------------------------------------------------------
     Controls = @(
 
-        # ── LOCAL ADMINISTRATORS ─────────────────────────────────────────────
+        # -- LOCAL ADMINISTRATORS ---------------------------------------------
         @{
             Id          = 'EP-LA-001'
             Title       = 'Local Administrators Group Membership Reviewed (<= 4 members)'
@@ -52,7 +52,7 @@
             Remediation = 'Deploy Windows LAPS via GPO (Computer Configuration > Policies > Administrative Templates > System > LAPS). Rotate and back up the local admin password to AD/Entra.'
         }
 
-        # ── REMOTE DESKTOP ───────────────────────────────────────────────────
+        # -- REMOTE DESKTOP ---------------------------------------------------
         @{
             Id          = 'EP-RDP-001'
             Title       = 'RDP Network Level Authentication (NLA) Required'
@@ -70,7 +70,7 @@
             Remediation = 'Enable via GPO: Computer Configuration > Administrative Templates > Windows Components > Remote Desktop Services > Remote Desktop Session Host > Security > Require user authentication for remote connections by using Network Level Authentication = Enabled.'
         }
 
-        # ── WINDOWS FIREWALL ─────────────────────────────────────────────────
+        # -- WINDOWS FIREWALL -------------------------------------------------
         @{
             Id          = 'EP-FW-001'
             Title       = 'Windows Firewall Enabled on All Profiles'
@@ -89,10 +89,10 @@
                 }
             }
             Expected    = 'Domain, Private, and Public firewall profiles all Enabled'
-            Remediation = 'Enable via GPO: Computer Configuration > Windows Settings > Security Settings > Windows Defender Firewall with Advanced Security — set Firewall state = On for all three profiles.'
+            Remediation = 'Enable via GPO: Computer Configuration > Windows Settings > Security Settings > Windows Defender Firewall with Advanced Security - set Firewall state = On for all three profiles.'
         }
 
-        # ── ANTIVIRUS / DEFENDER ─────────────────────────────────────────────
+        # -- ANTIVIRUS / DEFENDER ---------------------------------------------
         @{
             Id          = 'EP-AV-001'
             Title       = 'Microsoft Defender Antivirus Enabled with Real-Time Protection'
@@ -112,7 +112,7 @@
             Remediation = 'Ensure Defender (or your EDR) is running with real-time protection. If using 3rd-party AV, adjust this control. Configure via Defender GPO / Intune.'
         }
 
-        # ── BITLOCKER (workstations / laptops) ───────────────────────────────
+        # -- BITLOCKER (workstations / laptops) -------------------------------
         @{
             Id          = 'EP-BL-001'
             Title       = 'BitLocker Enabled on OS Volume'
@@ -131,7 +131,7 @@
             Remediation = 'Enable BitLocker via GPO/Intune with TPM + recovery key escrow to AD/Entra. Computer Configuration > Administrative Templates > Windows Components > BitLocker Drive Encryption.'
         }
 
-        # ── LEGACY PROTOCOLS ─────────────────────────────────────────────────
+        # -- LEGACY PROTOCOLS -------------------------------------------------
         @{
             Id          = 'EP-SMB1-001'
             Title       = 'SMBv1 Protocol Disabled'
@@ -149,7 +149,7 @@
             Remediation = 'Disable SMBv1: Disable-WindowsOptionalFeature -Online -FeatureName SMB1Protocol. Or via GPO/DSC across the fleet. Verify no legacy devices depend on SMBv1 first.'
         }
 
-        # ── PATCHING / UPDATES ───────────────────────────────────────────────
+        # -- PATCHING / UPDATES -----------------------------------------------
         @{
             Id          = 'EP-PATCH-001'
             Title       = 'No Missing Security Updates Older Than 30 Days'
@@ -168,10 +168,10 @@
                 }
             }
             Expected    = 'Most recent hotfix installed within the last 45 days (proxy for active patching)'
-            Remediation = 'Ensure the host receives updates via WSUS/SCCM/Intune/Windows Update. Investigate hosts with stale patch dates. (This is a heuristic — pair with a dedicated patch-compliance tool for authoritative data.)'
+            Remediation = 'Ensure the host receives updates via WSUS/SCCM/Intune/Windows Update. Investigate hosts with stale patch dates. (This is a heuristic - pair with a dedicated patch-compliance tool for authoritative data.)'
         }
 
-        # ── AUDIT / LOGGING (host level) ─────────────────────────────────────
+        # -- AUDIT / LOGGING (host level) -------------------------------------
         @{
             Id          = 'EP-AU-001'
             Title       = 'Security Event Log Size >= 196 MB'
@@ -190,7 +190,7 @@
             Remediation = 'Set via GPO: Computer Configuration > Administrative Templates > Windows Components > Event Log Service > Security > Specify the maximum log file size (KB) = 196608 or larger.'
         }
 
-        # ── SERVICES ─────────────────────────────────────────────────────────
+        # -- SERVICES ---------------------------------------------------------
         @{
             Id          = 'EP-SVC-001'
             Title       = 'Unnecessary Risky Services Disabled (Telnet, RemoteAccess, SNMP-trap)'

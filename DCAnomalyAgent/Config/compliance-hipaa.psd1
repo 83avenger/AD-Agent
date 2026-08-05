@@ -1,18 +1,18 @@
 @{
-    # ─────────────────────────────────────────────────────────────────────────
+    # -------------------------------------------------------------------------
     # HIPAA Security Rule compliance controls (45 CFR Part 164, Subpart C).
     #
-    # Technical safeguards (§164.312) and selected administrative safeguards
-    # (§164.308) that can be verified technically on Windows and Linux hosts.
-    # Checks run over WinRM (Windows) or SSH (Linux) — same transports and
+    # Technical safeguards (Sec 164.312) and selected administrative safeguards
+    # (Sec 164.308) that can be verified technically on Windows and Linux hosts.
+    # Checks run over WinRM (Windows) or SSH (Linux) - same transports and
     # least-privilege rights as the other framework files.
     #
     # Each control carries a HIPAA citation plus NIST/ISO cross-references so a
     # single scan can serve multiple audits.
-    # ─────────────────────────────────────────────────────────────────────────
+    # -------------------------------------------------------------------------
     Controls = @(
 
-        # ── ACCESS CONTROL — §164.312(a) ─────────────────────────────────────
+        # -- ACCESS CONTROL - Sec 164.312(a) -------------------------------------
         @{
             Id          = 'HI-AC-001'
             Title       = 'Built-in Guest Account Disabled'
@@ -32,7 +32,7 @@
 
         @{
             Id          = 'HI-AC-002'
-            Title       = 'Automatic Logoff — Machine Inactivity Limit <= 15 Minutes'
+            Title       = 'Automatic Logoff - Machine Inactivity Limit <= 15 Minutes'
             AppliesTo   = @('DomainController','MemberServer','Workstation')
             Frameworks  = @{ HIPAA = '164.312(a)(2)(iii)'; NIST = 'AC-11'; ISO = 'A.11.2.8'; CIS = 'CIS-L1 2.3.7.x' }
             Severity    = 'Medium'
@@ -65,7 +65,7 @@
             Remediation = 'Set via domain GPO: Account Policies > Account Lockout Policy > Account lockout threshold = 5 (or organizational standard <= 10).'
         }
 
-        # ── ENCRYPTION AT REST — §164.312(a)(2)(iv) ──────────────────────────
+        # -- ENCRYPTION AT REST - Sec 164.312(a)(2)(iv) --------------------------
         @{
             Id          = 'HI-EN-001'
             Title       = 'Disk Encryption (BitLocker) on Systems That May Store ePHI'
@@ -84,7 +84,7 @@
             Remediation = 'Enable BitLocker with TPM protector via GPO/Intune; escrow recovery keys to AD (Computer Configuration > Administrative Templates > Windows Components > BitLocker Drive Encryption).'
         }
 
-        # ── AUDIT CONTROLS — §164.312(b) ─────────────────────────────────────
+        # -- AUDIT CONTROLS - Sec 164.312(b) -------------------------------------
         @{
             Id          = 'HI-AU-001'
             Title       = 'Security Event Log Size Supports Activity Review (>= 1 GB)'
@@ -121,7 +121,7 @@
             Remediation = 'Set via GPO: Advanced Audit Policy Configuration > Logon/Logoff > Audit Logon = Success and Failure.'
         }
 
-        # ── INTEGRITY — §164.312(c)(1) ───────────────────────────────────────
+        # -- INTEGRITY - Sec 164.312(c)(1) ---------------------------------------
         @{
             Id          = 'HI-IN-001'
             Title       = 'SMBv1 Protocol Disabled'
@@ -139,7 +139,7 @@
             Remediation = 'Set-SmbServerConfiguration -EnableSMB1Protocol $false and remove the SMB1 feature (Disable-WindowsOptionalFeature -Online -FeatureName SMB1Protocol).'
         }
 
-        # ── TRANSMISSION SECURITY — §164.312(e)(1) ───────────────────────────
+        # -- TRANSMISSION SECURITY - Sec 164.312(e)(1) ---------------------------
         @{
             Id          = 'HI-TS-001'
             Title       = 'SMB Signing Required (ePHI Integrity in Transit)'
@@ -184,7 +184,7 @@
             Remediation = 'Under HKLM\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols, set Server\Enabled=0 and Server\DisabledByDefault=1 for TLS 1.0 and TLS 1.1. Deploy via GPO registry preferences; reboot required.'
         }
 
-        # ── LINUX — audit controls over SSH ──────────────────────────────────
+        # -- LINUX - audit controls over SSH ----------------------------------
         @{
             Id          = 'HI-LX-001'
             Title       = 'Linux Audit Daemon (auditd) Active for Activity Review'

@@ -53,7 +53,7 @@ Describe 'Merge-AssetInventory' {
 
 Describe 'Test-TcpPort' {
     It 'returns false quickly for a closed port' {
-        # 192.0.2.1 is TEST-NET-1 (RFC 5737) — guaranteed unreachable
+        # 192.0.2.1 is TEST-NET-1 (RFC 5737) - guaranteed unreachable
         Test-TcpPort -ComputerName '192.0.2.1' -Port 9 -TimeoutMs 300 | Should -Be $false
     }
 }
