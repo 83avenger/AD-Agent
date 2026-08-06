@@ -2,9 +2,10 @@
 
 ## Overview
 
-This guide covers two things:
+This guide covers three things:
 1. **Offline installs** — every download URL and how to transfer files with no internet on the jump server
 2. **Least-privilege service account** — exactly which rights the gMSA needs on each DC and how to grant them via GPO (no local admin required)
+3. **Network ports & cross-team prerequisites** — the exact port list to hand to the Network team, and what to request from AD, PKI, Messaging, and other teams (Part 3)
 
 ---
 
@@ -326,7 +327,127 @@ a crash, and the other checks continue.
 
 ---
 
-## Part 3 — Complete offline installation sequence
+## Part 3 — Network Ports & Cross-Team Prerequisites
+
+Share this section with the **Network**, **Identity/AD**, **Firewall**, and
+**Messaging/Collab** teams ahead of deployment — every port and account below
+is required by a specific piece of the tool, cited by module/function so it can
+be independently verified against the source if needed.
+
+### 3.1 Port list for the Network team
+
+All connections are **outbound from the jump server** — nothing needs to be
+opened *inbound* to the jump server except optionally the Web UI port (3.1.G).
+
+#### A — Jump server -> Domain Controllers (required)
+
+| Port | Protocol | Direction | Purpose | Source |
+|---|---|---|---|---|
+| 5985/TCP | WinRM (HTTP) | Jump -> DC | `Invoke-Command` remoting for all event-log/registry/auditpol checks | `DCAnomalyAgent.Collectors.psm1`, all compliance `Check` blocks |
+| 5986/TCP | WinRM (HTTPS) | Jump -> DC | Same as above, if the DC's WinRM listener is HTTPS-only | same |
+| 9389/TCP | ADWS (AD Web Services) | Jump -> DC | `Get-ADDomainController`, `Get-ADComputer`, `Get-ADGroupMember` (asset discovery, compliance target resolution, privileged-group checks) | `DCAnomalyAgent.Compliance.psm1`, `DCAnomalyAgent.Collectors.psm1`, `DCAnomalyAgent.Discovery.psm1` |
+| 389/TCP | LDAP | Jump -> DC | Fallback if ADWS (9389) is unreachable; also used by the asset-discovery network sweep to help classify a host as a DC | `DCAnomalyAgent.Discovery.psm1` |
+| 636/TCP | LDAPS | Jump -> DC | Certificate-expiry scan probes this port directly on every DC (`ProbeDcLdaps`) | `DCAnomalyAgent.Certificates.psm1` (`Get-EndpointCertificate`), `Run-AnomalyScan.ps1` |
+| 88/TCP+UDP | Kerberos | Jump -> DC | Authentication for the gMSA on every WinRM/ADWS/LDAP call above (implicit, not a scan target) | Windows Kerberos (SSO), also probed by asset discovery |
+| 445/TCP | SMB | Jump -> DC/servers | Remote Registry reads (SMB signing, LDAP signing, NTLMv1, WinRM listener config); also probed by asset discovery | `DCAnomalyAgent.Certificates.psm1` machine-store checks, `DCAnomalyAgent.Discovery.psm1` |
+
+#### B — Jump server -> Member servers & workstations (if scanning them)
+
+| Port | Protocol | Purpose | Source |
+|---|---|---|---|
+| 5985/TCP (or 5986) | WinRM | Same `Invoke-Command` checks as DCs — local admins, LAPS, RDP NLA, firewall, Defender, SMBv1, patch age, services, machine cert stores | `DCAnomalyAgent.Compliance.psm1`, `DCAnomalyAgent.Certificates.psm1` |
+| 445/TCP | SMB | Remote Registry reads | same |
+
+#### C — Jump server -> Linux/Unix hosts (if scanning them)
+
+| Port | Protocol | Purpose | Source |
+|---|---|---|---|
+| 22/TCP (configurable) | SSH | All Linux compliance checks (`ssh.exe`, key-based, `BatchMode=yes`) | `Config/settings.psd1 -> Assets.Linux.Ssh`, `compliance-linux.psd1` |
+
+#### D — Jump server -> Web applications / TLS endpoints (certificate & OWASP scans)
+
+| Port | Protocol | Purpose | Source |
+|---|---|---|---|
+| 443/TCP | HTTPS | OWASP posture checks (headers/TLS/cookies) on every `Assets.WebApplication` host; certificate-expiry probe on the same hosts (`ProbeWebApps`) | `compliance-owasp.psd1`, `DCAnomalyAgent.Certificates.psm1` |
+| Custom (443/587/3389/etc.) | TLS | Any extra endpoints listed in `Config/certificate-endpoints.psd1` — load balancers, mail gateways, VPN/RDP appliances | `DCAnomalyAgent.Certificates.psm1` (`Get-EndpointCertificate`) |
+
+> These are **read-only TLS handshakes** — the probe reads the presented server
+> certificate and does not send any authenticated request or validate the trust
+> chain. Coordinate with the owning team before adding a production endpoint.
+
+#### E — Jump server -> Enterprise CA (only if `Certificates.Adcs.Enabled = $true`)
+
+| Port | Protocol | Purpose | Source |
+|---|---|---|---|
+| 135/TCP + dynamic RPC (or DCOM-configured static port) | RPC/DCOM | `certutil -view` against the Issuing CA to list certs nearing expiry | `DCAnomalyAgent.Certificates.psm1` (`Get-CaIssuedCertificate`) |
+
+> Off by default. Only request this from the PKI/Network team if you intend to
+> enable ADCS-based certificate scanning; the machine-store and TLS-endpoint
+> sources (A/B/D above) already cover the vast majority of certificates.
+
+#### F — Jump server -> Internet (outbound HTTPS only, unless fully offline)
+
+| Destination | Port | Purpose | Can be disabled? |
+|---|---|---|---|
+| `www.cisa.gov` | 443/TCP | CISA Known Exploited Vulnerabilities (KEV) feed | Yes — set `ZeroDay.Offline = $true` and pre-load `State\kev-cache.json` |
+| `services.nvd.nist.gov` | 443/TCP | NVD CVE API v2 (secondary zero-day source) | Yes — leave `NvdApiKey` blank and/or block; KEV alone still functions |
+| `login.microsoftonline.com` | 443/TCP | Azure AD OAuth token for Graph (SharePoint reporting) | Yes — set `Reporting.SharePoint.Enabled = $false` |
+| `graph.microsoft.com` | 443/TCP | Writing anomaly/compliance/certificate items to SharePoint lists | Yes — same as above |
+| Your Teams webhook domain (`*.webhook.office.com`) | 443/TCP | Teams incoming webhook alerts | Yes — set `Reporting.Teams.Enabled = $false` |
+| Your SMTP relay | 587/TCP (or your relay's port) | Email alerts | Yes — set `Reporting.Email.Enabled = $false` |
+
+On a fully air-gapped jump server, disable every row in this table and rely on
+Teams/Email/SharePoint being unreachable (each fails independently without
+aborting a scan) plus the offline KEV cache workflow in Part 1.
+
+#### G — Web UI / Dashboard (inbound, optional)
+
+| Port | Protocol | Direction | Purpose |
+|---|---|---|---|
+| 5000/TCP (configurable via `--port`) | HTTP | Analyst workstation -> Jump server | Flask web UI + `/dashboard` rotating display |
+
+> The app has **no built-in authentication**. Bind to `127.0.0.1` (as shown in
+> Part 4) and front it with an internal reverse proxy (IIS/ARR) that enforces
+> Windows auth or IP allow-listing before exposing it beyond the jump server
+> itself. Do not expose 5000 directly to the network without a proxy in front.
+
+### 3.2 Prerequisites from other teams
+
+| Team | What to request | Why |
+|---|---|---|
+| **Active Directory / Identity** | Create the gMSA (`New-ADServiceAccount`), add it to a group granted **Remote Management Users** + **Event Log Readers** on the target OUs, grant `SeSecurityPrivilege` (Manage auditing and security log) via GPO — see Part 2 | Credential-free WinRM auth; least-privilege event log/audit reads |
+| **Active Directory / Identity** | Confirm a **KDS root key** exists in the forest (`Get-KdsRootKey`); create one 10+ hours before gMSA creation if not (`Add-KdsRootKey`) | Required before any gMSA can be created in the forest |
+| **Network / Firewall** | Open the ports in 3.1.A-C from the jump server to DCs, member servers, workstations, and any Linux hosts in scope | Core WinRM/SSH/LDAP/SMB scanning |
+| **Network / Firewall** | Open 3.1.D to any TLS endpoints added to `certificate-endpoints.psd1` or `Assets.WebApplication` | Certificate expiry + OWASP posture checks |
+| **Network / Firewall** | Open 3.1.F outbound HTTPS destinations, *or* confirm they should stay blocked (air-gapped mode) | Zero-day feeds, Teams, Graph/SharePoint, SMTP |
+| **PKI / Certificate Services team** | Only if enabling ADCS scanning: grant the gMSA (or a delegated account) read access to run `certutil -view` against the Issuing CA, and open 3.1.E | Enterprise CA certificate inventory |
+| **Messaging / Collaboration (Teams)** | Provide an Incoming Webhook URL for the target channel | `Reporting.Teams.WebhookUrl` |
+| **Messaging / Collaboration (Exchange/SMTP)** | Provide an SMTP relay endpoint (host/port), and confirm whether the jump server's IP/hostname needs to be allow-listed for anonymous relay, or provide a mailbox + credential if auth is required | `Reporting.Email` |
+| **M365 / SharePoint & Azure AD admin** | Register an Azure AD app (client credentials flow), grant it **Sites.ReadWrite.All** (application, admin-consented), issue a certificate for auth, and create/share the target SharePoint lists (Anomalies, Compliance, Certificates) with their List IDs | `Reporting.SharePoint` — see Part 2 equivalent app-registration steps in `DEPLOYMENT.md` |
+| **Server/Endpoint team** | Ensure WinRM is enabled and listening (5985/5986) on all member servers/workstations in scope; confirm Remote Registry service is set to at least Manual/Trigger-start | Compliance + certificate machine-store scans on non-DC assets |
+| **Linux/Unix team** | Create an unprivileged SSH scan account on each in-scope Linux host and install the jump server's public key in `~/.ssh/authorized_keys`; confirm `sshd` policy allows key-based, non-interactive login for that account | Linux compliance checks (`compliance-linux.psd1`) |
+| **Security/GRC** | Confirm which frameworks apply (CIS/NIST/ISO/HIPAA/OWASP) and the desired `Certificates.ThresholdDays` / severity thresholds | Scopes `FrameworkFilter`/`SeverityFilter` and alerting noise |
+| **Change Management** | Approve the network-discovery sweep window if `Run-Discovery.ps1 -Cidr` will be used — it is an **active TCP port probe** across the given ranges | `DCAnomalyAgent.Discovery.psm1` |
+
+### 3.3 One-page summary for a firewall change request
+
+```
+Source:      <jump server IP/hostname>
+Destinations & ports:
+  Domain Controllers      : 5985,5986,9389,389,636,88,445 (TCP; 88 also UDP)
+  Member servers/workstations : 5985,5986,445 (TCP)
+  Linux hosts (if in scope)   : 22 (TCP)
+  Web apps / TLS endpoints    : 443 + any custom ports in certificate-endpoints.psd1 (TCP)
+  Enterprise CA (optional)    : 135 + dynamic RPC (TCP)
+  Internet (optional, HTTPS) : www.cisa.gov, services.nvd.nist.gov,
+                                login.microsoftonline.com, graph.microsoft.com,
+                                *.webhook.office.com, your SMTP relay
+Inbound to jump server (optional): 5000/TCP from analyst workstations only (Web UI)
+```
+
+---
+
+## Part 4 — Complete offline installation sequence
 
 Once all files are copied to `C:\Transfer\` on the jump server:
 
