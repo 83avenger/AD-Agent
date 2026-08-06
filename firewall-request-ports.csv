@@ -1,0 +1,21 @@
+S.No,Source IP,Source Description,Destination IP,Destination Description,Service (TCP/UDP),Remarks/Reason
+1,<Jump Server IP>,AD-Agent jump server,<DC IPs/subnet>,Domain Controllers,TCP/5985,"WinRM (HTTP) - Invoke-Command for event log, registry, auditpol checks"
+2,<Jump Server IP>,AD-Agent jump server,<DC IPs/subnet>,Domain Controllers,TCP/5986,WinRM (HTTPS) - same as above if listener is HTTPS-only
+3,<Jump Server IP>,AD-Agent jump server,<DC IPs/subnet>,Domain Controllers,TCP/9389,ADWS - Get-ADDomainController / Get-ADComputer / Get-ADGroupMember
+4,<Jump Server IP>,AD-Agent jump server,<DC IPs/subnet>,Domain Controllers,TCP/389,LDAP - fallback if ADWS unreachable; asset discovery classification
+5,<Jump Server IP>,AD-Agent jump server,<DC IPs/subnet>,Domain Controllers,TCP/636,LDAPS - certificate-expiry probe on every DC (ProbeDcLdaps)
+6,<Jump Server IP>,AD-Agent jump server,<DC IPs/subnet>,Domain Controllers,TCP+UDP/88,Kerberos - gMSA authentication for all WinRM/ADWS/LDAP calls
+7,<Jump Server IP>,AD-Agent jump server,<DC IPs/subnet>,Domain Controllers,TCP/445,"SMB - Remote Registry reads (SMB/LDAP signing, NTLMv1, WinRM config)"
+8,<Jump Server IP>,AD-Agent jump server,<Member server/workstation IPs or subnet>,Member servers & workstations,"TCP/5985,5986","WinRM - local admins, LAPS, RDP NLA, firewall, Defender, patch, cert store checks"
+9,<Jump Server IP>,AD-Agent jump server,<Member server/workstation IPs or subnet>,Member servers & workstations,TCP/445,SMB - Remote Registry reads
+10,<Jump Server IP>,AD-Agent jump server,<Linux host IPs>,Linux/Unix hosts (optional),TCP/22,SSH (key-based) - Linux compliance checks
+11,<Jump Server IP>,AD-Agent jump server,<Web app IPs/VIPs>,Web applications / TLS endpoints (optional),TCP/443,HTTPS - OWASP posture checks + certificate-expiry probe
+12,<Jump Server IP>,AD-Agent jump server,<Custom endpoint IPs from certificate-endpoints.psd1>,"Load balancers, mail gateways, VPN/RDP appliances (optional)","TCP/custom (e.g. 443, 587, 3389)","Certificate-expiry probe only - read-only TLS handshake, no auth"
+13,<Jump Server IP>,AD-Agent jump server,<Issuing CA IP>,Enterprise CA (optional - ADCS scanning),TCP/135 + dynamic RPC,certutil -view for CA-issued certificates nearing expiry
+14,<Jump Server IP>,AD-Agent jump server,www.cisa.gov,CISA KEV feed (optional),TCP/443,Zero-day vulnerability feed; disable via ZeroDay.Offline = $true
+15,<Jump Server IP>,AD-Agent jump server,services.nvd.nist.gov,NVD CVE API (optional),TCP/443,Secondary zero-day source; disable by leaving NvdApiKey blank/blocking
+16,<Jump Server IP>,AD-Agent jump server,login.microsoftonline.com,Azure AD OAuth (optional),TCP/443,Token acquisition for Graph/SharePoint reporting
+17,<Jump Server IP>,AD-Agent jump server,graph.microsoft.com,Microsoft Graph (optional),TCP/443,Writes anomaly/compliance/certificate items to SharePoint lists
+18,<Jump Server IP>,AD-Agent jump server,<tenant>.webhook.office.com,Teams incoming webhook (optional),TCP/443,Teams alert delivery; disable via Reporting.Teams.Enabled = $false
+19,<Jump Server IP>,AD-Agent jump server,<SMTP relay IP/hostname>,Email relay (optional),TCP/587 (or relay's port),Email alert delivery; disable via Reporting.Email.Enabled = $false
+20,<Analyst workstation IPs/subnet>,"Analysts viewing the dashboard (optional, inbound)",<Jump Server IP>,AD-Agent jump server,TCP/5000,Web UI + rotating dashboard - front with a reverse proxy; no built-in auth

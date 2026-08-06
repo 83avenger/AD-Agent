@@ -429,21 +429,43 @@ aborting a scan) plus the offline KEV cache workflow in Part 1.
 | **Security/GRC** | Confirm which frameworks apply (CIS/NIST/ISO/HIPAA/OWASP) and the desired `Certificates.ThresholdDays` / severity thresholds | Scopes `FrameworkFilter`/`SeverityFilter` and alerting noise |
 | **Change Management** | Approve the network-discovery sweep window if `Run-Discovery.ps1 -Cidr` will be used — it is an **active TCP port probe** across the given ranges | `DCAnomalyAgent.Discovery.psm1` |
 
-### 3.3 One-page summary for a firewall change request
+### 3.3 Firewall change request form
 
-```
-Source:      <jump server IP/hostname>
-Destinations & ports:
-  Domain Controllers      : 5985,5986,9389,389,636,88,445 (TCP; 88 also UDP)
-  Member servers/workstations : 5985,5986,445 (TCP)
-  Linux hosts (if in scope)   : 22 (TCP)
-  Web apps / TLS endpoints    : 443 + any custom ports in certificate-endpoints.psd1 (TCP)
-  Enterprise CA (optional)    : 135 + dynamic RPC (TCP)
-  Internet (optional, HTTPS) : www.cisa.gov, services.nvd.nist.gov,
-                                login.microsoftonline.com, graph.microsoft.com,
-                                *.webhook.office.com, your SMTP relay
-Inbound to jump server (optional): 5000/TCP from analyst workstations only (Web UI)
-```
+Fill in the `<...>` placeholders (jump server IP, actual DC/host IPs or subnets)
+and hand this table to the Network team as-is. Rows marked *(optional)* only
+apply if that feature is enabled in `settings.psd1` — see the Remarks column.
+
+> A ready-to-import copy of this same table is at
+> [`firewall-request-ports.csv`](firewall-request-ports.csv) in the repo root —
+> open it directly in Excel/Google Sheets or attach it to the change ticket.
+
+| S.No | Source IP | Source Description | Destination IP | Destination Description | Service (TCP/UDP) | Remarks/Reason |
+|---|---|---|---|---|---|---|
+| 1 | `<Jump Server IP>` | AD-Agent jump server | `<DC IPs/subnet>` | Domain Controllers | TCP/5985 | WinRM (HTTP) - Invoke-Command for event log, registry, auditpol checks |
+| 2 | `<Jump Server IP>` | AD-Agent jump server | `<DC IPs/subnet>` | Domain Controllers | TCP/5986 | WinRM (HTTPS) - same as above if listener is HTTPS-only |
+| 3 | `<Jump Server IP>` | AD-Agent jump server | `<DC IPs/subnet>` | Domain Controllers | TCP/9389 | ADWS - Get-ADDomainController / Get-ADComputer / Get-ADGroupMember |
+| 4 | `<Jump Server IP>` | AD-Agent jump server | `<DC IPs/subnet>` | Domain Controllers | TCP/389 | LDAP - fallback if ADWS unreachable; asset discovery classification |
+| 5 | `<Jump Server IP>` | AD-Agent jump server | `<DC IPs/subnet>` | Domain Controllers | TCP/636 | LDAPS - certificate-expiry probe on every DC (ProbeDcLdaps) |
+| 6 | `<Jump Server IP>` | AD-Agent jump server | `<DC IPs/subnet>` | Domain Controllers | TCP+UDP/88 | Kerberos - gMSA authentication for all WinRM/ADWS/LDAP calls |
+| 7 | `<Jump Server IP>` | AD-Agent jump server | `<DC IPs/subnet>` | Domain Controllers | TCP/445 | SMB - Remote Registry reads (SMB/LDAP signing, NTLMv1, WinRM config) |
+| 8 | `<Jump Server IP>` | AD-Agent jump server | `<Member server/workstation IPs or subnet>` | Member servers & workstations | TCP/5985,5986 | WinRM - local admins, LAPS, RDP NLA, firewall, Defender, patch, cert store checks |
+| 9 | `<Jump Server IP>` | AD-Agent jump server | `<Member server/workstation IPs or subnet>` | Member servers & workstations | TCP/445 | SMB - Remote Registry reads |
+| 10 | `<Jump Server IP>` | AD-Agent jump server | `<Linux host IPs>` | Linux/Unix hosts *(optional)* | TCP/22 | SSH (key-based) - Linux compliance checks |
+| 11 | `<Jump Server IP>` | AD-Agent jump server | `<Web app IPs/VIPs>` | Web applications / TLS endpoints *(optional)* | TCP/443 | HTTPS - OWASP posture checks + certificate-expiry probe |
+| 12 | `<Jump Server IP>` | AD-Agent jump server | `<Custom endpoint IPs from certificate-endpoints.psd1>` | Load balancers, mail gateways, VPN/RDP appliances *(optional)* | TCP/custom (e.g. 443, 587, 3389) | Certificate-expiry probe only - read-only TLS handshake, no auth |
+| 13 | `<Jump Server IP>` | AD-Agent jump server | `<Issuing CA IP>` | Enterprise CA *(optional - ADCS scanning)* | TCP/135 + dynamic RPC | certutil -view for CA-issued certificates nearing expiry |
+| 14 | `<Jump Server IP>` | AD-Agent jump server | `www.cisa.gov` | CISA KEV feed *(optional)* | TCP/443 | Zero-day vulnerability feed; disable via ZeroDay.Offline = $true |
+| 15 | `<Jump Server IP>` | AD-Agent jump server | `services.nvd.nist.gov` | NVD CVE API *(optional)* | TCP/443 | Secondary zero-day source; disable by leaving NvdApiKey blank/blocking |
+| 16 | `<Jump Server IP>` | AD-Agent jump server | `login.microsoftonline.com` | Azure AD OAuth *(optional)* | TCP/443 | Token acquisition for Graph/SharePoint reporting |
+| 17 | `<Jump Server IP>` | AD-Agent jump server | `graph.microsoft.com` | Microsoft Graph *(optional)* | TCP/443 | Writes anomaly/compliance/certificate items to SharePoint lists |
+| 18 | `<Jump Server IP>` | AD-Agent jump server | `<tenant>.webhook.office.com` | Teams incoming webhook *(optional)* | TCP/443 | Teams alert delivery; disable via Reporting.Teams.Enabled = $false |
+| 19 | `<Jump Server IP>` | AD-Agent jump server | `<SMTP relay IP/hostname>` | Email relay *(optional)* | TCP/587 (or relay's port) | Email alert delivery; disable via Reporting.Email.Enabled = $false |
+| 20 | `<Analyst workstation IPs/subnet>` | Analysts viewing the dashboard *(optional, inbound)* | `<Jump Server IP>` | AD-Agent jump server | TCP/5000 | Web UI + rotating dashboard - front with a reverse proxy; no built-in auth |
+
+> Rows 1-9 are the core requirement for any deployment. Rows 10-19 are
+> outbound and only needed if that asset type/feature is in scope or enabled.
+> Row 20 is the only inbound rule, and only if the Web UI is used from other
+> workstations rather than accessed locally on the jump server.
 
 ---
 

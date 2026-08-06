@@ -356,6 +356,7 @@ Pester 5.x required. Tests mock WinRM and AD cmdlets — no live DC needed.
 | [DEPLOYMENT.md](DEPLOYMENT.md) | Jump server with internet access |
 | [DEPLOYMENT-OFFLINE.md](DEPLOYMENT-OFFLINE.md) | Air-gapped / no-internet environment — includes all download URLs, full GPO least-privilege config, and the **network ports / cross-team prerequisites list** to hand to Network, AD, PKI, and Messaging teams |
 | [DCAnomalyAgent/COMPLIANCE-OTHER-ASSETS.md](DCAnomalyAgent/COMPLIANCE-OTHER-ASSETS.md) | Extending compliance scans to member servers, workstations, and Linux hosts |
+| [firewall-request-ports.csv](firewall-request-ports.csv) | Ready-to-import firewall change request (S.No / Source IP / Destination IP / Service / Remarks) — the same table as `DEPLOYMENT-OFFLINE.md` Part 3.3 |
 
 ---
 
