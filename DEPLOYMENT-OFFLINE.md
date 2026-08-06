@@ -2,10 +2,11 @@
 
 ## Overview
 
-This guide covers three things:
+This guide covers four things:
 1. **Offline installs** — every download URL and how to transfer files with no internet on the jump server
 2. **Least-privilege service account** — exactly which rights the gMSA needs on each DC and how to grant them via GPO (no local admin required)
 3. **Network ports & cross-team prerequisites** — the exact port list to hand to the Network team, and what to request from AD, PKI, Messaging, and other teams (Part 3)
+4. **EDR/Windows Installer fallback** — what to do if the MSI-based Python installer is blocked by CrowdStrike or a similar EDR agent on a locked-down jump server (Part 5)
 
 ---
 
@@ -25,6 +26,11 @@ https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe
 ```
 
 > Check `https://www.python.org/ftp/python/` for the latest 3.12.x release if a newer patch exists.
+
+> **If this installer fails with a Windows Installer error (`0x80070659`) on a
+> jump server running CrowdStrike or another EDR agent**, skip to
+> [Part 5](#part-5--fallback-python-install-blocked-by-edrwindows-installer-policy)
+> for a no-MSI alternative before spending time troubleshooting GPO/permissions.
 
 ---
 
@@ -523,3 +529,152 @@ nssm start DCAnomalyWebUI
 cd C:\Apps\AD-Agent\DCAnomalyAgent\Install
 .\Register-ScheduledTask.ps1
 ```
+
+---
+
+## Part 5 — Fallback: Python Install Blocked by EDR/Windows Installer Policy
+
+Some jump servers are locked down tightly enough that the standard MSI-based
+Python installer (Part 1.1 / Part 4 step 1) gets rejected — most commonly by
+an EDR agent (CrowdStrike Falcon, Defender for Endpoint, etc.) flagging the
+installer's temporary MSI extraction, or by a Windows Installer restriction
+GPO. This part shows how to recognize that failure and install Python without
+touching Windows Installer at all.
+
+### 5.1 How to recognize this failure
+
+Running the documented silent install:
+```cmd
+C:\Transfer\python-3.12.10-amd64.exe /quiet InstallAllUsers=1 PrependPath=1 Include_pip=1
+```
+fails, and the Burn bootstrapper log (`%TEMP%\Python 3.12.10 (64-bit)_*.log`)
+shows:
+```
+e000: Error 0x80070659: Failed to install MSI package.
+e000: Error 0x80070659: Failed to configure per-user MSI package.
+...
+e000: Error 0x80070005: Failed to secure cache path: C:\ProgramData\Package Cache\
+```
+
+`0x80070659` is `ERROR_INSTALL_PACKAGE_REJECTED` — "this installation is
+forbidden by system policy." Rule out the two common causes in order:
+
+1. **Windows Installer GPO restriction** — check with:
+   ```cmd
+   gpresult /h C:\Transfer\gpresult.html
+   ```
+   and search the report for "Windows Installer." If nothing is listed under
+   Computer Configuration > Administrative Templates > Windows Components >
+   Windows Installer, this is not a GPO issue.
+2. **Broken ACLs on the package cache** — check with:
+   ```cmd
+   icacls "C:\ProgramData\Package Cache"
+   ```
+   `BUILTIN\Administrators` and `NT AUTHORITY\SYSTEM` should show `(F)`. If
+   they do, this is not a permissions issue either.
+
+If both check out clean, the remaining and most likely cause is the **EDR
+agent intercepting the freshly-extracted MSI** during install (Burn unpacks
+`core.msi` into `Package Cache` immediately before running it, and EDR
+real-time protection often flags newly-written, unsigned-looking MSI content
+even though the parent installer `.exe` is legitimately signed). Confirm by
+asking your security team to check the EDR console (e.g. Falcon
+Detections/Preventions) for this hostname at the exact timestamp from the
+Burn log.
+
+### 5.2 Fix option A — request an EDR exception (preferred, permanent)
+
+Ask security/SOC to allow-list, for this host:
+- `C:\Transfer\python-3.12.10-amd64.exe` (or wherever the installer runs from)
+- `C:\Users\<installing-user>\AppData\Local\Package Cache\*` (the Burn
+  extraction path shown in the log)
+
+Then re-run the same command from Part 4 step 1 once the exception is applied.
+Do this even if you use Option B below to unblock yourself immediately — NSSM
+service installation (Part 4 step 10) can hit the same class of block, and a
+sanctioned, documented exception is the right long-term state for a
+production/regulated jump server.
+
+### 5.3 Fix option B — embeddable Python (no MSI, unblocks immediately)
+
+The **embeddable ZIP** distribution is just extracted files — no Windows
+Installer involved — so this class of EDR/GPO block does not apply to it.
+
+**On the internet-connected machine, download:**
+
+| File | Source |
+|---|---|
+| `python-3.12.10-embed-amd64.zip` | https://www.python.org/downloads/windows/ → Python 3.12.10 → "Windows embeddable package (64-bit)" |
+| `get-pip.py` | https://bootstrap.pypa.io/get-pip.py |
+
+Also download **pip itself** as a wheel, since the jump server has no
+internet and `get-pip.py` needs it locally:
+```cmd
+pip download pip --dest C:\AD-Agent-Wheels --platform win_amd64 --python-version 312 --only-binary=:all:
+```
+(Run this alongside the Part 1.4 wheel download — same command shape, just
+add `pip` to the list of packages to fetch.)
+
+Transfer the zip, `get-pip.py`, and the wheels folder to the jump server along
+with everything else in Part 1.5.
+
+**On the jump server:**
+```cmd
+mkdir C:\Apps\Python312
+tar -xf C:\Transfer\python-3.12.10-embed-amd64.zip -C C:\Apps\Python312
+```
+Edit `C:\Apps\Python312\python312._pth` and uncomment the site-packages line
+(remove the leading `#`):
+```
+# before
+#import site
+# after
+import site
+```
+This step is required — without it, `pip` and installed packages are
+invisible to the embeddable interpreter.
+
+Bootstrap pip and install the app's dependencies, entirely offline:
+```cmd
+C:\Apps\Python312\python.exe C:\Transfer\get-pip.py --no-index --find-links C:\AD-Agent-Wheels
+C:\Apps\Python312\python.exe -m pip install --no-index --find-links C:\AD-Agent-Wheels flask reportlab waitress
+```
+Verify:
+```cmd
+C:\Apps\Python312\python.exe -c "import flask, reportlab, waitress; print('All packages OK')"
+```
+
+You'll see warnings like `The script flask.exe is installed in
+'C:\Apps\Python312\Scripts' which is not on PATH` — these are harmless and
+can be ignored; AD-Agent is launched via `python.exe start.py`, not via those
+console-script shims.
+
+### 5.4 Adjustments elsewhere in this guide when using the embeddable install
+
+No venv is needed or supported the same way with the embeddable distribution
+— skip the `python -m venv .venv` / `Activate.ps1` steps entirely and call
+`C:\Apps\Python312\python.exe` directly everywhere Part 4 says `python`:
+
+```cmd
+# Part 4 step 4-5 equivalent (already done above in 5.3)
+
+# Part 4 step 8 — smoke test (unchanged, this is PowerShell, not Python)
+cd C:\Apps\AD-Agent\DCAnomalyAgent
+.\Run-AnomalyScan.ps1 -DryRun -DomainControllerOverride 'dc01.contoso.com'
+
+# Part 4 step 9 — interactive web UI test
+cd C:\Apps\AD-Agent\WebApp
+C:\Apps\Python312\python.exe start.py --prod --host 127.0.0.1 --port 5000
+# Browse http://127.0.0.1:5000 and verify scan + PDF/CSV download
+
+# Part 4 step 10 — install as a Windows service under the gMSA
+nssm install DCAnomalyWebUI `
+    "C:\Apps\Python312\python.exe" `
+    "C:\Apps\AD-Agent\WebApp\start.py --prod --host 127.0.0.1 --port 5000"
+nssm set DCAnomalyWebUI AppDirectory "C:\Apps\AD-Agent\WebApp"
+nssm set DCAnomalyWebUI ObjectName "CONTOSO\svc-dcAnomalyAgent$" ""
+nssm start DCAnomalyWebUI
+```
+
+Part 4 step 11 (registering the PowerShell scheduled scan tasks) is unaffected
+either way — it has no Python dependency.
