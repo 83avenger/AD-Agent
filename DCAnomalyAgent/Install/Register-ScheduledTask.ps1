@@ -8,10 +8,10 @@
 .NOTES
     One-time prerequisites (run by a domain admin, not by this script):
       1. Create the gMSA:
-           New-ADServiceAccount -Name 'svc-dcAnomalyAgent' -DNSHostName 'svc-dcAnomalyAgent.contoso.com' `
+           New-ADServiceAccount -Name 'svc-discoverAgt' -DNSHostName 'svc-discoverAgt.contoso.com' `
                -PrincipalsAllowedToRetrieveManagedPassword 'MGMT-SERVER$'
       2. Install it on the management server:
-           Install-ADServiceAccount -Identity 'svc-dcAnomalyAgent'
+           Install-ADServiceAccount -Identity 'svc-discoverAgt'
       3. Grant the gMSA "Log on as a batch job" on the management server (Local Security Policy
          or via GPO), and read access to the Security event log on each DC (add the gMSA to a
          security group that is a member of the built-in "Event Log Readers" group on each DC,
@@ -24,7 +24,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$GmsaAccount = 'CONTOSO\svc-dcAnomalyAgent$',
+    [string]$GmsaAccount = 'CONTOSO\svc-discoverAgt$',
     [string]$ScriptPath = (Resolve-Path "$PSScriptRoot\..\Run-AnomalyScan.ps1").Path,
     [string]$TaskName = 'DCAnomalyAgent-Scan',
     [string[]]$TriggerTimes = @('06:00', '14:00', '22:00')

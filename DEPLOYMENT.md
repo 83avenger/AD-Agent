@@ -110,15 +110,15 @@ Run as a **Domain Admin** on a DC or admin workstation:
 
 ```powershell
 # Create the gMSA, allowing this jump server to retrieve its password
-New-ADServiceAccount -Name 'svc-dcAnomalyAgent' `
-  -DNSHostName 'svc-dcAnomalyAgent.contoso.com' `
+New-ADServiceAccount -Name 'svc-discoverAgt' `
+  -DNSHostName 'svc-discoverAgt.contoso.com' `
   -PrincipalsAllowedToRetrieveManagedPassword 'JUMPSERVER$'
 ```
 
 On the **jump server** (elevated):
 ```powershell
-Install-ADServiceAccount -Identity 'svc-dcAnomalyAgent'
-Test-ADServiceAccount   -Identity 'svc-dcAnomalyAgent'   # must return True
+Install-ADServiceAccount -Identity 'svc-discoverAgt'
+Test-ADServiceAccount   -Identity 'svc-discoverAgt'   # must return True
 ```
 
 Grant the gMSA **read access to the Security event log** on each DC — add it to
@@ -174,7 +174,7 @@ nssm install DCAnomalyWebUI "C:\Apps\AD-Agent\WebApp\.venv\Scripts\python.exe" `
 nssm set DCAnomalyWebUI AppDirectory "C:\Apps\AD-Agent\WebApp"
 
 # Run the service under the gMSA so subprocess scans inherit Kerberos context
-nssm set DCAnomalyWebUI ObjectName "CONTOSO\svc-dcAnomalyAgent$" ""
+nssm set DCAnomalyWebUI ObjectName "CONTOSO\svc-discoverAgt$" ""
 
 nssm start DCAnomalyWebUI
 ```

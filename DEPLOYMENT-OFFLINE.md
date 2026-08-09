@@ -158,21 +158,21 @@ Run as **Domain Admin** on a DC:
 ```powershell
 # Create the gMSA, restricting password retrieval to only the jump server
 New-ADServiceAccount `
-    -Name            'svc-dcAnomalyAgent' `
-    -DNSHostName     'svc-dcAnomalyAgent.contoso.com' `
+    -Name            'svc-discoverAgt' `
+    -DNSHostName     'svc-discoverAgt.contoso.com' `
     -PrincipalsAllowedToRetrieveManagedPassword 'JUMPSERVER$'
 
 # Verify it was created
-Get-ADServiceAccount -Identity 'svc-dcAnomalyAgent'
+Get-ADServiceAccount -Identity 'svc-discoverAgt'
 ```
 
 On the **jump server** (elevated):
 
 ```powershell
-Install-ADServiceAccount -Identity 'svc-dcAnomalyAgent'
+Install-ADServiceAccount -Identity 'svc-discoverAgt'
 
 # Must return True — if False, recheck PrincipalsAllowedToRetrieveManagedPassword
-Test-ADServiceAccount -Identity 'svc-dcAnomalyAgent'
+Test-ADServiceAccount -Identity 'svc-discoverAgt'
 ```
 
 ---
@@ -191,14 +191,14 @@ Link it to: `OU=Domain Controllers,DC=contoso,DC=com`
 
 - Action: **Update**
 - Group Name: **Remote Management Users (built-in)**
-- Members: Add `CONTOSO\svc-dcAnomalyAgent$`
+- Members: Add `CONTOSO\svc-discoverAgt$`
 - Tick "Do not remove users from the group"
 
 Repeat for **Event Log Readers (built-in)**.
 
 **(Alternative: Restricted Groups — replaces membership)**
 `Computer Configuration > Policies > Windows Settings > Security Settings > Restricted Groups`
-Add group `Remote Management Users`, add `CONTOSO\svc-dcAnomalyAgent$` as a member.
+Add group `Remote Management Users`, add `CONTOSO\svc-discoverAgt$` as a member.
 Repeat for `Event Log Readers`.
 
 > Preferences is safer as it doesn't remove other members.
@@ -210,7 +210,7 @@ Repeat for `Event Log Readers`.
 `Computer Configuration > Policies > Windows Settings > Security Settings > Local Policies > User Rights Assignment`
 
 Policy: **Manage auditing and security log**
-Add: `CONTOSO\svc-dcAnomalyAgent$`
+Add: `CONTOSO\svc-discoverAgt$`
 
 > This is the `SeSecurityPrivilege` right — needed so `auditpol /get` works
 > in the remote WinRM session without local admin.
@@ -241,7 +241,7 @@ For each key above:
 - Action: **Update**
 - Hive: `HKEY_LOCAL_MACHINE`
 - Path: `SYSTEM\CurrentControlSet\Services\LanManWorkstation\Parameters`
-- Permissions: Add `svc-dcAnomalyAgent$` with **Read** access
+- Permissions: Add `svc-discoverAgt$` with **Read** access
 
 Repeat for the other three paths.
 
@@ -258,7 +258,7 @@ foreach ($dc in $dcs) {
 
 # Verify the rights applied correctly on one DC
 Invoke-Command -ComputerName dc01.contoso.com -ScriptBlock {
-    # Should show svc-dcAnomalyAgent in both groups
+    # Should show svc-discoverAgt in both groups
     net localgroup "Remote Management Users"
     net localgroup "Event Log Readers"
 }
@@ -504,8 +504,8 @@ python -c "import flask, reportlab, waitress; print('All packages OK')"
 notepad C:\Apps\AD-Agent\DCAnomalyAgent\Config\settings.psd1
 
 # 7 — Install the gMSA (Domain Admin already ran New-ADServiceAccount)
-Install-ADServiceAccount -Identity 'svc-dcAnomalyAgent'
-Test-ADServiceAccount   -Identity 'svc-dcAnomalyAgent'   # must return True
+Install-ADServiceAccount -Identity 'svc-discoverAgt'
+Test-ADServiceAccount   -Identity 'svc-discoverAgt'   # must return True
 
 # 8 — Smoke test the scanner
 cd C:\Apps\AD-Agent\DCAnomalyAgent
@@ -522,7 +522,7 @@ nssm install DCAnomalyWebUI `
     "C:\Apps\AD-Agent\WebApp\.venv\Scripts\python.exe" `
     "C:\Apps\AD-Agent\WebApp\start.py --prod --host 127.0.0.1 --port 5000"
 nssm set DCAnomalyWebUI AppDirectory "C:\Apps\AD-Agent\WebApp"
-nssm set DCAnomalyWebUI ObjectName "CONTOSO\svc-dcAnomalyAgent$" ""
+nssm set DCAnomalyWebUI ObjectName "CONTOSO\svc-discoverAgt$" ""
 nssm start DCAnomalyWebUI
 
 # 11 — Register scheduled scan tasks
@@ -672,7 +672,7 @@ nssm install DCAnomalyWebUI `
     "C:\Apps\Python312\python.exe" `
     "C:\Apps\AD-Agent\WebApp\start.py --prod --host 127.0.0.1 --port 5000"
 nssm set DCAnomalyWebUI AppDirectory "C:\Apps\AD-Agent\WebApp"
-nssm set DCAnomalyWebUI ObjectName "CONTOSO\svc-dcAnomalyAgent$" ""
+nssm set DCAnomalyWebUI ObjectName "CONTOSO\svc-discoverAgt$" ""
 nssm start DCAnomalyWebUI
 ```
 

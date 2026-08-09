@@ -177,20 +177,20 @@ Add-KdsRootKey -EffectiveTime ((Get-Date).AddHours(-10))
 
 **Step 3.2 — Create the gMSA and allow the jump server to use it.**
 ```powershell
-New-ADServiceAccount -Name 'svc-dcAgent' `
-    -DNSHostName 'svc-dcAgent.contoso.com' `
+New-ADServiceAccount -Name 'svc-discoverAgt' `
+    -DNSHostName 'svc-discoverAgt.contoso.com' `
     -PrincipalsAllowedToRetrieveManagedPassword 'JUMP01$'
 ```
 
 **Step 3.3 — Install the gMSA on the jump server** (run on the jump server):
 ```powershell
-Install-ADServiceAccount -Identity 'svc-dcAgent'
-Test-ADServiceAccount -Identity 'svc-dcAgent'   # must return True
+Install-ADServiceAccount -Identity 'svc-discoverAgt'
+Test-ADServiceAccount -Identity 'svc-discoverAgt'   # must return True
 ```
 
 **Step 3.4 — Grant least-privilege rights via GPO.** Create/link a GPO to the OUs
 containing your DCs, member servers, and workstations that grants the gMSA (via a
-group, e.g. `GG-AD-Agent-Scanners`, that contains `svc-dcAgent$`):
+group, e.g. `GG-AD-Agent-Scanners`, that contains `svc-discoverAgt$`):
 
 | Right | Where | Why |
 |---|---|---|
@@ -527,7 +527,7 @@ pip install waitress
 nssm install AD-Agent-Web "C:\Apps\AD-Agent\WebApp\.venv\Scripts\python.exe" `
     "C:\Apps\AD-Agent\WebApp\start.py --prod --host 127.0.0.1 --port 5000"
 nssm set AD-Agent-Web AppDirectory C:\Apps\AD-Agent\WebApp
-nssm set AD-Agent-Web ObjectName 'CONTOSO\svc-dcAgent$' ''   # run as the gMSA
+nssm set AD-Agent-Web ObjectName 'CONTOSO\svc-discoverAgt$' ''   # run as the gMSA
 nssm start AD-Agent-Web
 ```
 > Bind to `127.0.0.1` and front with an IIS/ARR reverse proxy for TLS + Windows auth
@@ -558,7 +558,7 @@ badge disappears.
 server):
 ```powershell
 cd C:\Apps\AD-Agent\DCAnomalyAgent\Install
-.\Register-ScheduledTask.ps1 -GmsaAccount 'CONTOSO\svc-dcAgent$'
+.\Register-ScheduledTask.ps1 -GmsaAccount 'CONTOSO\svc-discoverAgt$'
 ```
 
 This creates:

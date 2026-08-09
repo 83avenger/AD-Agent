@@ -353,7 +353,7 @@ Controls: `Space` pauses rotation, `←`/`→` navigate, `F` toggles fullscreen;
 
 ```powershell
 cd DCAnomalyAgent\Install
-.\Register-ScheduledTask.ps1 -GmsaAccount 'CONTOSO\svc-dcagent$'
+.\Register-ScheduledTask.ps1 -GmsaAccount 'CONTOSO\svc-discoverAgt$'
 ```
 
 Creates these Scheduled Tasks under the gMSA:
