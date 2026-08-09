@@ -86,6 +86,8 @@ def generate_pdf(scan_result: dict) -> bytes:
     summary    = scan_result.get("ComplianceSummary") or {}
     certs      = [c for c in (scan_result.get("ExpiringCertificates") or [])
                   if c.get("DaysRemaining") is not None]
+    software   = [sw for sw in (scan_result.get("SoftwareInventory") or []) if not sw.get("Error")]
+    vuln_sw    = scan_result.get("VulnerableSoftware") or []
 
     # ── Header ────────────────────────────────────────────────────────────────
     story.append(Paragraph("DC Anomaly &amp; Compliance Report", s["title"]))
@@ -273,6 +275,73 @@ def generate_pdf(scan_result: dict) -> bytes:
         ]))
         story.append(tbl)
 
+    # ── Software inventory section ───────────────────────────────────────────
+    story.append(Spacer(1, 0.6 * cm))
+    story.append(Paragraph("Software Inventory", s["h2"]))
+    story.append(HRFlowable(width="100%", thickness=1, color=BRAND_MID))
+    story.append(Spacer(1, 0.2 * cm))
+
+    if not software:
+        story.append(Paragraph("No software inventory data in this scan.", s["body"]))
+    else:
+        hosts = {sw.get("ComputerName") for sw in software if sw.get("ComputerName")}
+        story.append(Paragraph(
+            f"{len(hosts)} host(s) inventoried, {len(software)} installed-software record(s).",
+            s["body"],
+        ))
+        story.append(Spacer(1, 0.2 * cm))
+
+        if vuln_sw:
+            story.append(Paragraph(
+                f"<font color='#c0392b'><b>{len(vuln_sw)} zero-day exposure hit(s) found in installed software:</b></font>",
+                s["body"],
+            ))
+            vheaders = ["Host", "Category", "Software", "CVE", "Vulnerability"]
+            vrows = [vheaders]
+            for h in vuln_sw:
+                vrows.append([
+                    Paragraph(str(h.get("ComputerName", "")), s["small"]),
+                    Paragraph(str(h.get("Category", "")), s["small"]),
+                    Paragraph(f"{h.get('SoftwareName','')} {h.get('SoftwareVersion','')}", s["small"]),
+                    Paragraph(str(h.get("CveId", "")), s["small"]),
+                    Paragraph(str(h.get("VulnerabilityName", "")), s["small"]),
+                ])
+            vtbl = Table(vrows, colWidths=[3.2*cm, 2.2*cm, 5.0*cm, 2.8*cm, 3.9*cm], repeatRows=1)
+            vtbl.setStyle(TableStyle([
+                ("BACKGROUND",   (0, 0), (-1, 0), colors.HexColor("#c0392b")),
+                ("TEXTCOLOR",    (0, 0), (-1, 0), colors.white),
+                ("FONTNAME",     (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTSIZE",     (0, 0), (-1, 0), 8),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, BRAND_LIGHT]),
+                ("GRID",         (0, 0), (-1, -1), 0.3, colors.lightgrey),
+                ("VALIGN",       (0, 0), (-1, -1), "TOP"),
+            ]))
+            story.append(vtbl)
+            story.append(Spacer(1, 0.4 * cm))
+
+        prod_counts: dict = {}
+        for sw in software:
+            name = sw.get("Name")
+            if name:
+                prod_counts[name] = prod_counts.get(name, 0) + 1
+        top_products = sorted(prod_counts.items(), key=lambda kv: -kv[1])[:15]
+
+        story.append(Paragraph("Top installed products", s["body"]))
+        pheaders = ["Product", "Host count"]
+        prows = [pheaders] + [[Paragraph(name, s["small"]), Paragraph(str(count), s["small"])]
+                               for name, count in top_products]
+        ptbl = Table(prows, colWidths=[13.0*cm, 4.0*cm], repeatRows=1)
+        ptbl.setStyle(TableStyle([
+            ("BACKGROUND",   (0, 0), (-1, 0), BRAND_MID),
+            ("TEXTCOLOR",    (0, 0), (-1, 0), colors.white),
+            ("FONTNAME",     (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE",     (0, 0), (-1, 0), 8),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, BRAND_LIGHT]),
+            ("GRID",         (0, 0), (-1, -1), 0.3, colors.lightgrey),
+            ("VALIGN",       (0, 0), (-1, -1), "TOP"),
+        ]))
+        story.append(ptbl)
+
     # ── Footer ────────────────────────────────────────────────────────────────
     story.append(Spacer(1, 0.4 * cm))
     story.append(HRFlowable(width="100%", thickness=1, color=colors.lightgrey))
@@ -352,5 +421,26 @@ def generate_csv_certificates(scan_result: dict) -> str:
             "Locations":     c.get("Locations", ""),
             "DnsNames":      c.get("DnsNames", ""),
             "Thumbprint":    c.get("Id", ""),
+        })
+    return buf.getvalue()
+
+
+def generate_csv_software(scan_result: dict) -> str:
+    buf = io.StringIO()
+    software = [s for s in (scan_result.get("SoftwareInventory") or []) if not s.get("Error")]
+    software = sorted(software, key=lambda s: (s.get("Category", ""), s.get("ComputerName", ""), s.get("Name", "")))
+    w = csv.DictWriter(buf, fieldnames=[
+        "ComputerName", "Category", "Name", "Version", "Publisher", "InstallDate", "Architecture",
+    ])
+    w.writeheader()
+    for s in software:
+        w.writerow({
+            "ComputerName": s.get("ComputerName", ""),
+            "Category":     s.get("Category", ""),
+            "Name":         s.get("Name", ""),
+            "Version":      s.get("Version", ""),
+            "Publisher":    s.get("Publisher", ""),
+            "InstallDate":  s.get("InstallDate", ""),
+            "Architecture": s.get("Architecture", ""),
         })
     return buf.getvalue()

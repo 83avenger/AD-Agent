@@ -48,7 +48,7 @@
   .panel .ph{font-size:.78rem; text-transform:uppercase; letter-spacing:1px; color:var(--muted); margin-bottom:.7rem; font-weight:700}
 
   /* KPI tiles */
-  .kpis{display:grid; grid-template-columns:repeat(4,1fr); gap:1.1rem}
+  .kpis{display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:1.1rem}
   .kpi{position:relative; overflow:hidden; padding:1.3rem 1.3rem 1.1rem}
   .kpi .num{font-size:clamp(2.6rem,5vw,4rem); font-weight:800; line-height:1; font-variant-numeric:tabular-nums}
   .kpi .lbl{color:var(--muted); font-size:.85rem; font-weight:600; margin-top:.5rem}
@@ -140,6 +140,7 @@
   <section class="screen" data-name="Compliance Posture"></section>
   <section class="screen" data-name="Threats &amp; Anomalies"></section>
   <section class="screen" data-name="Certificate Expiry"></section>
+  <section class="screen" data-name="Software Inventory"></section>
 </div>
 
 <footer>
@@ -201,13 +202,14 @@ function renderOverview(d){
   const postureTxt = {critical:'Critical exposure — immediate action required',
     warn:'Attention needed — findings above baseline', good:'Healthy — no critical findings'}[d.posture];
   return `
-   <h2>Executive Overview <span class="fresh">Anomalies ${timeAgo(f.Anomalies)} · Compliance ${timeAgo(f.Compliance)} · Certs ${timeAgo(f.Certificates)} · Zero-day ${timeAgo(f.ZeroDay)}</span></h2>
+   <h2>Executive Overview <span class="fresh">Anomalies ${timeAgo(f.Anomalies)} · Compliance ${timeAgo(f.Compliance)} · Certs ${timeAgo(f.Certificates)} · Zero-day ${timeAgo(f.ZeroDay)} · Software ${timeAgo(f.SoftwareInventory)}</span></h2>
    <div class="posture p-${d.posture}"><span class="dot"></span><span class="txt"><b>${d.posture.toUpperCase()}</b> &nbsp;·&nbsp; ${postureTxt}</span></div>
    <div class="kpis">
      <div class="panel kpi c-${k.anomalies?'high':'good'}"><div class="num">${k.anomalies}</div><div class="lbl">Security Anomalies</div></div>
      <div class="panel kpi c-accent"><div class="num">${score}</div><div class="lbl">Compliance Score · ${k.compliance_passed}/${k.compliance_total} passing</div></div>
      <div class="panel kpi c-${k.zerodays?'critical':'good'}"><div class="num">${k.zerodays}</div><div class="lbl">Active Zero-Day Alerts</div></div>
      <div class="panel kpi c-${k.certs_urgent?'critical':(k.certs?'medium':'good')}"><div class="num">${k.certs}</div><div class="lbl">Expiring Certificates · ${k.certs_urgent} &lt; 30 days</div></div>
+     <div class="panel kpi c-${k.software_vulnerable?'critical':'good'}"><div class="num">${k.software_hosts}</div><div class="lbl">Hosts Inventoried · ${k.software_vulnerable} zero-day exposure(s)</div></div>
    </div>
    <div class="panel"><div class="ph">Open findings by severity (all sources)</div>${sevBar(d.severity_totals)}</div>`;
 }
@@ -311,7 +313,36 @@ function renderCerts(d){
    </div>`;
 }
 
-const RENDERERS = [renderOverview, renderCompliance, renderThreats, renderCerts];
+function renderSoftware(d){
+  const sw=d.software, f=d.freshness||{};
+  const catPairs = Object.entries(sw.by_category||{}).sort((a,b)=>b[1]-a[1]);
+  const catCatalog = {'Domain Controller':'var(--critical)','Server':'var(--high)','Desktop':'var(--accent)','Laptop':'var(--low)','Workstation':'var(--medium)'};
+  const vulnList = sw.vulnerable.length ? sw.vulnerable.map(h=>{
+    const ransom = String(h.KnownRansomwareCampaignUse||'').toLowerCase()==='known';
+    return `<div class="row">
+      <span class="cve" style="color:${ransom?'var(--critical)':'var(--high)'}">${esc(h.CveId)}</span>
+      ${ransom?'<span class="ransom">RANSOMWARE</span>':''}
+      <span class="title" title="${esc(h.SoftwareName)}">${esc(h.SoftwareName)} ${esc(h.SoftwareVersion)} on ${esc(h.ComputerName)}</span>
+      <span class="meta">${esc(h.Category||'')}</span></div>`;}).join('')
+    : '<div class="empty">✅ No zero-day exposure found in installed software</div>';
+  const prodPairs = (sw.top_products||[]).slice(0,8);
+  return `
+   <h2>Software Inventory <span class="fresh">updated ${timeAgo(f.SoftwareInventory)}</span></h2>
+   <div class="grid" style="grid-template-columns:1fr 1fr; flex:1; min-height:0">
+     <div class="panel" style="display:flex;flex-direction:column;min-height:0">
+       <div class="ph">Hosts by category (${sw.host_count} total)</div>
+       ${hbars(catPairs, (lab)=>catCatalog[lab]||'var(--accent)')}
+       <div class="ph" style="margin-top:1.1rem">Top installed products</div>
+       ${hbars(prodPairs, ()=>'var(--low)')}
+     </div>
+     <div class="panel" style="display:flex;flex-direction:column;min-height:0">
+       <div class="ph">Zero-day exposure via installed software</div>
+       <div class="rows" style="overflow:auto">${vulnList}</div>
+     </div>
+   </div>`;
+}
+
+const RENDERERS = [renderOverview, renderCompliance, renderThreats, renderCerts, renderSoftware];
 
 function renderAll(){
   if(!data) return;

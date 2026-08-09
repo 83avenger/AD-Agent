@@ -26,6 +26,7 @@ from report_generator import (
     generate_csv_anomalies,
     generate_csv_certificates,
     generate_csv_compliance,
+    generate_csv_software,
     generate_pdf,
 )
 
@@ -79,6 +80,8 @@ def _run_scan(
         cmd.append("-ComplianceScan")
     if "certificate" in scan_types:
         cmd.append("-CertificateScan")
+    if "software" in scan_types:
+        cmd.append("-SoftwareInventoryScan")
     if frameworks:
         cmd += ["-FrameworkFilter"] + frameworks
     if severities:
@@ -168,11 +171,27 @@ def _mock_result(dcs: list[str]) -> dict:
              "DueDate": "2025-07-11", "RequiredAction": "Apply updates per vendor instructions.",
              "KnownRansomwareCampaignUse": "Unknown"},
         ],
+        "SoftwareInventory": [
+            {"ComputerName": "ws01.contoso.com", "Category": "Laptop", "Name": "Adobe Acrobat Reader DC",
+             "Version": "23.001.20143", "Publisher": "Adobe Inc.", "InstallDate": "20250110", "Architecture": "64-bit", "Error": None},
+            {"ComputerName": "ws02.contoso.com", "Category": "Desktop", "Name": "7-Zip 22.01",
+             "Version": "22.01", "Publisher": "Igor Pavlov", "InstallDate": "20241203", "Architecture": "64-bit", "Error": None},
+            {"ComputerName": "sql01.contoso.com", "Category": "Server", "Name": "Microsoft SQL Server 2019",
+             "Version": "15.0.4261.1", "Publisher": "Microsoft Corporation", "InstallDate": "20230512", "Architecture": "64-bit", "Error": None},
+            {"ComputerName": dcs[0] if dcs else "dc01", "Category": "Domain Controller", "Name": "Google Chrome",
+             "Version": "120.0.6099.109", "Publisher": "Google LLC", "InstallDate": "20250601", "Architecture": "64-bit", "Error": None},
+        ],
+        "VulnerableSoftware": [
+            {"ComputerName": "ws01.contoso.com", "Category": "Laptop", "SoftwareName": "Adobe Acrobat Reader DC",
+             "SoftwareVersion": "23.001.20143", "CveId": "CVE-2025-21299", "VulnerabilityName": "Windows Kerberos Security Feature Bypass",
+             "KnownRansomwareCampaignUse": "Known", "DueDate": "2025-07-13"},
+        ],
         "Freshness": {
             "Anomalies": datetime.utcnow().isoformat(),
             "Compliance": datetime.utcnow().isoformat(),
             "Certificates": datetime.utcnow().isoformat(),
             "ZeroDay": datetime.utcnow().isoformat(),
+            "SoftwareInventory": datetime.utcnow().isoformat(),
         },
         "_demo": True,
     }
@@ -209,6 +228,8 @@ def _dashboard_payload() -> dict:
     certs     = [c for c in (data.get("ExpiringCertificates") or [])
                  if c.get("DaysRemaining") is not None]
     zerodays  = data.get("ZeroDays") or []
+    software  = [s for s in (data.get("SoftwareInventory") or []) if not s.get("Error")]
+    vuln_sw   = data.get("VulnerableSoftware") or []
     freshness = data.get("Freshness") or {}
 
     gap_sev  = _sev_counts(gaps)
@@ -232,7 +253,7 @@ def _dashboard_payload() -> dict:
     score = summary.get("ScorePct")
 
     posture = "good"
-    if total_sev["Critical"] > 0:
+    if total_sev["Critical"] > 0 or len(vuln_sw) > 0:
         posture = "critical"
     elif total_sev["High"] > 0 or (score is not None and score < 80):
         posture = "warn"
@@ -253,6 +274,23 @@ def _dashboard_payload() -> dict:
     gaps_sorted = sorted(gaps, key=lambda g: (SEV_RANK.get(g.get("Severity", "Low"), 9),
                                               g.get("ControlId", "")))
 
+    # Software inventory aggregates.
+    sw_hosts = {s.get("ComputerName") for s in software if s.get("ComputerName")}
+    sw_by_category: dict = {}
+    seen_host_category = set()
+    for s in software:
+        host, cat = s.get("ComputerName"), s.get("Category", "Unknown")
+        key = (host, cat)
+        if host and key not in seen_host_category:
+            seen_host_category.add(key)
+            sw_by_category[cat] = sw_by_category.get(cat, 0) + 1
+    sw_products: dict = {}
+    for s in software:
+        name = s.get("Name")
+        if name:
+            sw_products[name] = sw_products.get(name, 0) + 1
+    sw_top_products = sorted(sw_products.items(), key=lambda kv: -kv[1])[:8]
+
     return {
         "demo": demo,
         "generated": datetime.utcnow().isoformat(),
@@ -265,6 +303,8 @@ def _dashboard_payload() -> dict:
             "zerodays": len(zerodays),
             "certs": len(certs),
             "certs_urgent": len(certs_under_30),
+            "software_hosts": len(sw_hosts),
+            "software_vulnerable": len(vuln_sw),
         },
         "posture": posture,
         "severity_totals": total_sev,
@@ -283,6 +323,13 @@ def _dashboard_payload() -> dict:
             "by_severity": cert_sev,
             "soonest": certs_sorted[:8],
             "urgent_count": len(certs_under_30),
+        },
+        "software": {
+            "host_count": len(sw_hosts),
+            "by_category": sw_by_category,
+            "top_products": sw_top_products,
+            "vulnerable": vuln_sw[:8],
+            "vulnerable_count": len(vuln_sw),
         },
     }
 
@@ -339,6 +386,8 @@ def scan():
     gaps       = result.get("ComplianceGaps") or []
     summary    = result.get("ComplianceSummary") or {}
     certs      = result.get("ExpiringCertificates") or []
+    software   = [s for s in (result.get("SoftwareInventory") or []) if not s.get("Error")]
+    vuln_sw    = result.get("VulnerableSoftware") or []
     sev_rank   = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3}
 
     return render_template(
@@ -352,6 +401,8 @@ def scan():
             [c for c in certs if c.get("DaysRemaining") is not None],
             key=lambda c: (sev_rank.get(c.get("Severity","Low"), 9), c.get("DaysRemaining", 9999)),
         ),
+        software   = sorted(software, key=lambda s: (s.get("Category",""), s.get("ComputerName",""), s.get("Name",""))),
+        vulnerable_software = vuln_sw,
         scan_types = scan_types,
         frameworks = frameworks,
         severities = severities,
@@ -416,6 +467,21 @@ def download_csv_certificates():
         csv_str,
         mimetype="text/csv",
         headers={"Content-Disposition": f"attachment; filename=expiring_certificates_{ts}.csv"},
+    )
+
+
+@app.route("/download/csv/software")
+def download_csv_software():
+    raw = session.get("last_result")
+    if not raw:
+        return "No scan result in session. Run a scan first.", 400
+    result = json.loads(raw)
+    csv_str = generate_csv_software(result)
+    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    return Response(
+        csv_str,
+        mimetype="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=software_inventory_{ts}.csv"},
     )
 
 

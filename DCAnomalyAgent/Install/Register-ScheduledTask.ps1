@@ -81,3 +81,15 @@ Register-ScheduledTask -TaskName "$TaskName-Certificates" -Action $certAction `
     -Description 'Scans machine stores, TLS endpoints and the CA for certificates expiring within the configured threshold (default 90 days)'
 
 Write-Host "Certificate task '$TaskName-Certificates' registered to run daily at 09:00 under $GmsaAccount"
+
+# -- Software inventory task (runs once daily) ---------------------------------
+$softwareAction = New-ScheduledTaskAction -Execute 'powershell.exe' `
+    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`" -SoftwareInventoryScan -SkipAnomalyScan"
+
+$softwareTrigger = New-ScheduledTaskTrigger -Daily -At '10:00'
+
+Register-ScheduledTask -TaskName "$TaskName-SoftwareInventory" -Action $softwareAction `
+    -Trigger $softwareTrigger -Principal $principal -Settings $settings `
+    -Description 'Enumerates installed software on Windows assets, categorizes by device type, and cross-references against the zero-day watchlist'
+
+Write-Host "Software inventory task '$TaskName-SoftwareInventory' registered to run daily at 10:00 under $GmsaAccount"

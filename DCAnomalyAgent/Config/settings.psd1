@@ -172,6 +172,19 @@
         ReportOutputPath = "$PSScriptRoot\..\State\certificate-report.md"
     }
 
+    # Installed-software inventory. Enumerates installed products (name/version/
+    # publisher) on every configured Windows asset over WinRM, categorizes hosts as
+    # Desktop/Laptop/Server/Domain Controller, and optionally cross-references
+    # installed versions against the zero-day watchlist to flag actual exposure.
+    SoftwareInventory = @{
+        Enabled        = $true
+        ScanAssetTypes = @('DomainController', 'MemberServer', 'Workstation')
+        # Flag installed software matching a product in the CISA KEV / NVD watchlist
+        # (Config/zeroday-products.psd1). Requires the ZeroDay module/feed.
+        CrossReferenceZeroDay = $true
+        ReportOutputPath = "$PSScriptRoot\..\State\software-inventory-report.md"
+    }
+
     # Rotating dashboard snapshot. Every scan run merges its section(s) into this
     # file; the web UI dashboard reads it. Because each scheduled task runs one
     # scan type, the merge preserves the other sections from prior runs.

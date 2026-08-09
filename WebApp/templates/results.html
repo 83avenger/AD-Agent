@@ -55,6 +55,15 @@
     Certificates CSV
   </a>
   {% endif %}
+  {% if 'software' in scan_types %}
+  <a href="/download/csv/software" class="btn btn-outline btn-sm">
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
+      <polyline points="14 2 14 8 20 8"/>
+    </svg>
+    Software Inventory CSV
+  </a>
+  {% endif %}
 </div>
 
 <!-- Score cards -->
@@ -101,6 +110,11 @@
   {% if 'certificate' in scan_types %}
   <button class="tab-btn" onclick="showTab('certificates', this)">
     🔐 Expiring Certificates ({{ certs | length }})
+  </button>
+  {% endif %}
+  {% if 'software' in scan_types %}
+  <button class="tab-btn" onclick="showTab('software', this)">
+    💻 Software Inventory ({{ software | length }})
   </button>
   {% endif %}
 </div>
@@ -250,6 +264,75 @@
             <td style="font-size:.8rem; color:var(--muted);">{{ c.get('Issuer','') }}</td>
             <td style="font-size:.78rem;">{{ c.get('Sources','') }}</td>
             <td style="font-size:.78rem; color:var(--muted);">{{ c.get('Locations','') }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
+<!-- ── Software Inventory tab ────────────────────────────────────────── -->
+{% if 'software' in scan_types %}
+<div id="tab-software" class="tab-panel">
+  {% if vulnerable_software %}
+  <div class="card">
+    <div class="card-header" style="color:var(--critical);">⚠ Zero-Day Exposure via Installed Software</div>
+    <div class="tbl-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Host</th>
+            <th>Category</th>
+            <th>Software</th>
+            <th>CVE</th>
+            <th>Vulnerability</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for h in vulnerable_software %}
+          <tr>
+            <td style="font-size:.82rem;">{{ h.get('ComputerName','') }}</td>
+            <td style="font-size:.8rem; color:var(--muted);">{{ h.get('Category','') }}</td>
+            <td style="font-size:.82rem;">{{ h.get('SoftwareName','') }} {{ h.get('SoftwareVersion','') }}</td>
+            <td><code style="font-size:.8rem; color:var(--critical);">{{ h.get('CveId','') }}</code></td>
+            <td style="font-size:.8rem;">{{ h.get('VulnerabilityName','') }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+
+  <div class="card">
+    <div class="card-header">Installed Software by Host</div>
+    {% if not software %}
+    <p style="color:var(--muted); font-size:.9rem;">No software inventory data for this scan.</p>
+    {% else %}
+    <div class="tbl-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th style="width:130px">Category</th>
+            <th>Host</th>
+            <th>Software</th>
+            <th style="width:110px">Version</th>
+            <th>Publisher</th>
+            <th style="width:80px">Arch</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for sw in software %}
+          <tr>
+            <td><span class="badge">{{ sw.get('Category','') }}</span></td>
+            <td style="font-size:.8rem;">{{ sw.get('ComputerName','') }}</td>
+            <td style="font-size:.82rem;">{{ sw.get('Name','') }}</td>
+            <td style="font-size:.78rem; color:var(--muted);">{{ sw.get('Version','') }}</td>
+            <td style="font-size:.78rem; color:var(--muted);">{{ sw.get('Publisher','') }}</td>
+            <td style="font-size:.75rem; color:var(--muted);">{{ sw.get('Architecture','') }}</td>
           </tr>
           {% endfor %}
         </tbody>

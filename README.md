@@ -11,9 +11,10 @@ A one-stop security services platform for Windows/AD environments, built in Powe
 | Web application posture | OWASP Top 10 header/TLS/cookie checks on HTTPS endpoints | `Run-AnomalyScan.ps1 -ComplianceScan -AssetType WebApplication` |
 | Vulnerability intelligence | CISA KEV + NVD zero-day feed, deduplicated alerts | `Run-AnomalyScan.ps1 -ZeroDayScan` |
 | Certificate expiry | Machine stores + TLS endpoints + Enterprise CA, flags certs expiring within 90 days | `Run-AnomalyScan.ps1 -CertificateScan` |
+| Software & device inventory | Installed software (name/version/publisher) on every Windows asset, categorized Desktop/Laptop/Server/Domain Controller, cross-referenced against the zero-day watchlist | `Run-AnomalyScan.ps1 -SoftwareInventoryScan` |
 | Asset inventory | AD + network discovery and classification | `Run-Discovery.ps1` |
 | Reporting & alerting | Teams, SharePoint, email, markdown, PDF/CSV | automatic / web UI |
-| Live dashboard | Rotating NOC wall display cycling 4 screens across all scan types | `/dashboard` (web UI) |
+| Live dashboard | Rotating NOC wall display cycling 5 screens across all scan types | `/dashboard` (web UI) |
 
 ---
 
@@ -28,6 +29,7 @@ A one-stop security services platform for Windows/AD environments, built in Powe
 | Reporting | Teams Adaptive Card alerts, SharePoint list items (Graph API), **email (SMTP)**, local markdown report, PDF/CSV download via web UI |
 | Zero-day telemetry | Pulls CISA KEV catalog + NVD daily; alerts on newly-added CVEs matching your product watch list; deduplicates so each CVE fires only once |
 | Certificate expiry | Scans Windows machine stores (WinRM), live TLS endpoints (socket probe), and an Enterprise CA; flags any certificate expiring within a configurable threshold (default 90 days) with severity by days-remaining |
+| Software & device inventory | Enumerates installed software (registry Uninstall keys, 64-bit + WOW6432Node) on every configured Windows asset over WinRM; categorizes hosts as Desktop/Laptop (via chassis type) /Server/Domain Controller; optionally flags installed products matching an active CISA KEV/NVD CVE |
 | Web UI | Flask app — choose scan type, frameworks, severities, target hosts; download PDF or CSV reports |
 
 ---
@@ -54,7 +56,8 @@ AD-Agent/
 │   │   ├── DCAnomalyAgent.Compliance.psm1   # Compliance engine
 │   │   ├── DCAnomalyAgent.Discovery.psm1    # Asset discovery (AD + network)
 │   │   ├── DCAnomalyAgent.ZeroDay.psm1      # CISA KEV + NVD zero-day telemetry
-│   │   └── DCAnomalyAgent.Certificates.psm1 # Certificate expiry scanning (stores/TLS/CA)
+│   │   ├── DCAnomalyAgent.Certificates.psm1 # Certificate expiry scanning (stores/TLS/CA)
+│   │   └── DCAnomalyAgent.SoftwareInventory.psm1 # Installed software + device category inventory
 │   ├── Config/
 │   │   ├── zeroday-products.psd1        # Vendor/product watch list for zero-day alerts
 │   │   └── certificate-endpoints.psd1  # Extra TLS endpoints to probe for cert expiry
@@ -293,18 +296,56 @@ Findings are reported to Teams, email, and a dedicated SharePoint list (`Certifi
 
 ---
 
+## Software & device inventory
+
+Enumerates installed software on every configured Windows asset over WinRM (registry `Uninstall` keys, both native and `WOW6432Node` views — the standard no-extra-tooling approach), and classifies each host into a device category:
+
+| AssetType (from asset discovery) | Category | How |
+|---|---|---|
+| `DomainController` | Domain Controller | passthrough |
+| `MemberServer` | Server | passthrough |
+| `Workstation` | **Desktop** or **Laptop** | `Win32_SystemEnclosure.ChassisTypes` over WinRM (falls back to `Workstation` if the chassis type is unrecognized or the query fails) |
+
+If `CrossReferenceZeroDay` is enabled, installed product names are matched against the CISA KEV/NVD watchlist (`Config/zeroday-products.psd1`) so a host actually running a known-exploited version is flagged — not just alerted on abstractly.
+
+### Configure (`Config/settings.psd1 → SoftwareInventory`)
+
+```powershell
+SoftwareInventory = @{
+    Enabled               = $true
+    ScanAssetTypes        = @('DomainController','MemberServer','Workstation')
+    CrossReferenceZeroDay = $true
+    ReportOutputPath      = "$PSScriptRoot\..\State\software-inventory-report.md"
+}
+```
+
+### Run
+
+```powershell
+# Dry run — prints top installed products + any zero-day exposure, sends no alerts
+.\Run-AnomalyScan.ps1 -SoftwareInventoryScan -DryRun
+
+# Full run — Teams / email alerts only when installed software matches the zero-day watchlist
+.\Run-AnomalyScan.ps1 -SoftwareInventoryScan
+```
+
+Results are written to `State\software-inventory-report.md` and merged into the dashboard snapshot. The web UI exposes it as a "💻 Software Inventory" option with a CSV download; zero-day exposure hits (if any) get their own table in both the web UI and the PDF report.
+
+---
+
 ## Live rotating dashboard
 
-A full-screen operations dashboard for a NOC/wall display, at **`/dashboard`** in the web UI. It auto-rotates through **4 screens** every 13 seconds:
+A full-screen operations dashboard for a NOC/wall display, at **`/dashboard`** in the web UI. It auto-rotates through **5 screens** every 13 seconds:
 
-1. **Executive Overview** — posture banner + KPI tiles (anomalies, compliance score, zero-day alerts, expiring certs) and an all-sources severity bar
+1. **Executive Overview** — posture banner + KPI tiles (anomalies, compliance score, zero-day alerts, expiring certs, inventoried hosts) and an all-sources severity bar
 2. **Compliance Posture** — score gauge, gaps by severity, top failing controls, per-asset breakdown
 3. **Threats & Anomalies** — anomalies by type, recent anomalies, zero-day CVE watchlist (ransomware-flagged)
 4. **Certificate Expiry** — severity split, soonest-to-expire countdown, count expiring < 30 days
+5. **Software Inventory** — hosts by category (Desktop/Laptop/Server/Domain Controller), top installed products, zero-day exposure via installed software
 
 Controls: `Space` pauses rotation, `←`/`→` navigate, `F` toggles fullscreen; hovering the stage pauses so operators can read. The page polls `/api/dashboard` every 3 minutes for fresh data.
 
-**Data source.** Every scan run merges its results into `State/latest-scan.json` (configurable via `Dashboard.SnapshotPath`). Because each scheduled task runs a single scan type, the merge *preserves the other sections* — so the dashboard always shows all four areas even though anomaly, compliance, zero-day, and certificate scans run in separate tasks. If no snapshot exists yet, the dashboard shows clearly-labelled demo data.
+**Data source.** Every scan run merges its results into `State/latest-scan.json` (configurable via `Dashboard.SnapshotPath`). Because each scheduled task runs a single scan type, the merge *preserves the other sections* — so the dashboard always shows all five areas even though anomaly, compliance, zero-day, certificate, and software-inventory scans run in separate tasks. If no snapshot exists yet, the dashboard shows clearly-labelled demo data.
 
 ---
 
@@ -323,8 +364,9 @@ Creates these Scheduled Tasks under the gMSA:
 | `DCAnomalyAgent-Scan-Compliance` | Daily 07:00 | Compliance scan (`-SkipAnomalyScan`) |
 | `DCAnomalyAgent-Scan-ZeroDay` | Daily 08:00 | Zero-day feed pull (`-SkipAnomalyScan`) |
 | `DCAnomalyAgent-Scan-Certificates` | Daily 09:00 | Certificate expiry scan (`-SkipAnomalyScan`) |
+| `DCAnomalyAgent-Scan-SoftwareInventory` | Daily 10:00 | Installed-software inventory + zero-day cross-reference (`-SkipAnomalyScan`) |
 
-> The compliance, zero-day, and certificate tasks pass **`-SkipAnomalyScan`** so they don't each re-run and re-report the event-log anomaly scan that the dedicated anomaly task already covers 3×/day. Each still contributes its section to the dashboard snapshot.
+> The compliance, zero-day, certificate, and software-inventory tasks pass **`-SkipAnomalyScan`** so they don't each re-run and re-report the event-log anomaly scan that the dedicated anomaly task already covers 3×/day. Each still contributes its section to the dashboard snapshot.
 
 ---
 

@@ -515,8 +515,77 @@ function Write-SharePointCertificateItems {
     }
 }
 
+function Send-TeamsSoftwareExposureAlert {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$WebhookUrl,
+        [Parameter(Mandatory)][array]$VulnerableHits
+    )
+
+    if (-not $VulnerableHits -or $VulnerableHits.Count -eq 0) { return }
+
+    $top = $VulnerableHits | Select-Object -First 15
+    $facts = $top | ForEach-Object {
+        $ransomTag = if ($_.KnownRansomwareCampaignUse -eq 'Known') { ' [RANSOMWARE]' } else { '' }
+        @{
+            title = "$($_.CveId)$ransomTag - $($_.SoftwareName) $($_.SoftwareVersion)"
+            value = "Host: $($_.ComputerName) ($($_.Category)) | $($_.VulnerabilityName)"
+        }
+    }
+    if ($VulnerableHits.Count -gt 15) {
+        $facts += @{ title = '...'; value = "$($VulnerableHits.Count - 15) more exposure(s) in the full report." }
+    }
+
+    $card = @{
+        '@type'    = 'MessageCard'
+        '@context' = 'http://schema.org/extensions'
+        summary    = "Software Inventory: $($VulnerableHits.Count) zero-day exposure(s) found"
+        themeColor = 'C0392B'
+        title      = "Zero-Day Exposure via Installed Software - $($VulnerableHits.Count) hit(s)"
+        sections   = @(@{ activityTitle = 'Installed software matching the CISA KEV / NVD watchlist'; facts = $facts })
+    }
+
+    try {
+        Invoke-RestMethod -Uri $WebhookUrl -Method Post -Body ($card | ConvertTo-Json -Depth 8) -ContentType 'application/json'
+    } catch {
+        Write-Warning "Failed to send Teams software exposure alert: $_"
+    }
+}
+
+function Send-EmailSoftwareExposureAlert {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$EmailConfig,
+        [Parameter(Mandatory)][array]$VulnerableHits
+    )
+
+    if (-not $EmailConfig.Enabled -or -not $VulnerableHits) { return }
+
+    try {
+        $table = _Build-HtmlTable -Rows $VulnerableHits -Columns @('ComputerName','Category','SoftwareName','SoftwareVersion','CveId','VulnerabilityName','KnownRansomwareCampaignUse')
+        $body  = "<h2 style=`"color:#c0392b`">Zero-Day Exposure via Installed Software - $($VulnerableHits.Count) hit(s)</h2>$table"
+        $cred  = _Get-EmailCredential -EmailConfig $EmailConfig
+
+        $params = @{
+            To         = $EmailConfig.To
+            From       = $EmailConfig.From
+            Subject    = "[AD-Agent] Software Zero-Day Exposure - $($VulnerableHits.Count) hit(s) - $(Get-Date -Format 'yyyy-MM-dd')"
+            Body       = $body
+            BodyAsHtml = $true
+            SmtpServer = $EmailConfig.SmtpServer
+            Port       = $EmailConfig.Port
+            UseSsl     = $EmailConfig.UseSsl
+        }
+        if ($cred) { $params['Credential'] = $cred }
+        Send-MailMessage @params
+    } catch {
+        Write-Warning "Failed to send email software exposure alert: $_"
+    }
+}
+
 Export-ModuleMember -Function Send-TeamsAlert, Write-SharePointListItem, Get-GraphAccessToken, `
     Send-TeamsComplianceReport, Write-SharePointComplianceItems, `
     Send-EmailAlert, Send-EmailComplianceReport, `
     Send-TeamsZeroDayAlert, Send-EmailZeroDayAlert, `
-    Send-TeamsCertificateReport, Send-EmailCertificateReport, Write-SharePointCertificateItems
+    Send-TeamsCertificateReport, Send-EmailCertificateReport, Write-SharePointCertificateItems, `
+    Send-TeamsSoftwareExposureAlert, Send-EmailSoftwareExposureAlert

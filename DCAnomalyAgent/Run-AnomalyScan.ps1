@@ -12,6 +12,10 @@
 .PARAMETER ZeroDayScan
     Pull the CISA KEV catalog (and optionally NVD) and alert on newly-added CVEs that
     match the product watch list in Config/zeroday-products.psd1.
+.PARAMETER SoftwareInventoryScan
+    Enumerate installed software (name/version/publisher) on every configured Windows
+    asset, categorize hosts as Desktop/Laptop/Server/Domain Controller, and optionally
+    cross-reference installed versions against the zero-day watchlist.
 .PARAMETER TestEmail
     Send a synthetic test email to verify SMTP configuration without running a real scan.
 .PARAMETER FrameworkFilter
@@ -31,6 +35,7 @@ param(
     [switch]$ComplianceScan,
     [switch]$ZeroDayScan,
     [switch]$CertificateScan,
+    [switch]$SoftwareInventoryScan,
     # Skip the event-log anomaly scan. Used by the compliance/zero-day/certificate
     # Scheduled Tasks so they don't each re-run (and re-report) the anomaly scan
     # that the dedicated anomaly task already covers 3x/day.
@@ -90,6 +95,20 @@ if ($runCertScan) {
     Import-Module "$PSScriptRoot\Modules\DCAnomalyAgent.Certificates.psm1" -Force
     if (-not (Get-Module DCAnomalyAgent.Compliance -ErrorAction SilentlyContinue)) {
         Import-Module "$PSScriptRoot\Modules\DCAnomalyAgent.Compliance.psm1" -Force
+    }
+}
+
+# Software inventory follows the same explicit-request pattern as compliance/certificates.
+# Needs its own module plus Compliance (for Get-AssetTargets) and, if cross-referencing
+# against the zero-day watchlist is enabled, the ZeroDay module too.
+$runSoftwareInventory = $SoftwareInventoryScan -and (-not $config.SoftwareInventory -or $config.SoftwareInventory.Enabled)
+if ($runSoftwareInventory) {
+    Import-Module "$PSScriptRoot\Modules\DCAnomalyAgent.SoftwareInventory.psm1" -Force
+    if (-not (Get-Module DCAnomalyAgent.Compliance -ErrorAction SilentlyContinue)) {
+        Import-Module "$PSScriptRoot\Modules\DCAnomalyAgent.Compliance.psm1" -Force
+    }
+    if ($config.SoftwareInventory.CrossReferenceZeroDay -and -not (Get-Module DCAnomalyAgent.ZeroDay -ErrorAction SilentlyContinue)) {
+        Import-Module "$PSScriptRoot\Modules\DCAnomalyAgent.ZeroDay.psm1" -Force
     }
 }
 
@@ -415,6 +434,77 @@ if ($runCertScan) {
 }
 
 # -----------------------------------------------------------------------------
+# SOFTWARE INVENTORY SCAN
+# -----------------------------------------------------------------------------
+$softwareInventory  = @()
+$vulnerableSoftware = @()
+if ($runSoftwareInventory) {
+    Write-ScanLog "Starting software inventory scan..."
+    $swCfg = $config.SoftwareInventory
+    $collected = @()
+
+    foreach ($at in $swCfg.ScanAssetTypes) {
+        $assetCfg = $config.Assets[$at]
+        if (-not $assetCfg) { continue }
+        try {
+            $targets = Get-AssetTargets -AssetType $at -AssetConfig $assetCfg -FallbackHosts $config.DomainControllers
+        } catch {
+            Write-ScanLog "ERROR (software: resolve $at targets): $_"; continue
+        }
+        foreach ($t in $targets) {
+            $category = Get-DeviceCategory -ComputerName $t -AssetType $at
+            try {
+                $collected += Get-InstalledSoftware -ComputerName $t -Category $category
+            } catch {
+                Write-ScanLog "ERROR (software: inventory on $t): $_"
+            }
+        }
+    }
+
+    $softwareInventory = $collected
+    $installedOnly = @($softwareInventory | Where-Object { -not $_.Error })
+    $hostCount = @($installedOnly | Select-Object -ExpandProperty ComputerName -Unique).Count
+    Write-ScanLog "Software inventory complete: $($installedOnly.Count) record(s) across $hostCount host(s)."
+
+    if ($swCfg.CrossReferenceZeroDay) {
+        try {
+            $zdForCrossRef = Get-ZeroDayMatches -Config $config.ZeroDay
+            $vulnerableSoftware = Find-VulnerableInstalledSoftware -Inventory $softwareInventory -ZeroDayMatches $zdForCrossRef
+            if ($vulnerableSoftware.Count -gt 0) {
+                Write-ScanLog "Software inventory: $($vulnerableSoftware.Count) zero-day exposure hit(s) found in installed software."
+            }
+        } catch {
+            Write-ScanLog "ERROR (software: zero-day cross-reference): $_"
+        }
+    }
+
+    if ($swCfg.ReportOutputPath) {
+        $swReportDir = Split-Path -Path $swCfg.ReportOutputPath -Parent
+        if (-not (Test-Path $swReportDir)) { New-Item -ItemType Directory -Path $swReportDir -Force | Out-Null }
+        Format-SoftwareInventoryReport -Inventory $softwareInventory -VulnerableHits $vulnerableSoftware -ScanTime $scanTime |
+            Set-Content -Path $swCfg.ReportOutputPath -Encoding UTF8
+        Write-ScanLog "Software inventory report saved: $($swCfg.ReportOutputPath)"
+    }
+
+    if ($DryRun) {
+        Write-Host "`n=== SOFTWARE INVENTORY (top products) ==="
+        $installedOnly | Group-Object Name | Sort-Object Count -Descending | Select-Object -First 15 Name, Count |
+            Format-Table -AutoSize
+        if ($vulnerableSoftware.Count -gt 0) {
+            Write-Host "`n=== ZERO-DAY EXPOSURE (installed software) ==="
+            $vulnerableSoftware | Format-Table -AutoSize
+        }
+    } elseif ($vulnerableSoftware.Count -gt 0) {
+        if ($config.Reporting.Teams.Enabled) {
+            Send-TeamsSoftwareExposureAlert -WebhookUrl $config.Reporting.Teams.WebhookUrl -VulnerableHits $vulnerableSoftware
+        }
+        if ($config.Reporting.Email.Enabled) {
+            Send-EmailSoftwareExposureAlert -EmailConfig $config.Reporting.Email -VulnerableHits $vulnerableSoftware
+        }
+    }
+}
+
+# -----------------------------------------------------------------------------
 # DASHBOARD SNAPSHOT (merged across scan types)
 # Each scheduled task runs a single scan type, so we merge this run's sections
 # into the persisted snapshot rather than overwriting - the rotating dashboard
@@ -440,6 +530,7 @@ try {
     $ranCompliance = $ComplianceScan -and $config.Compliance.Enabled
     $ranCert       = $runCertScan
     $ranZeroDay    = $runZeroDay
+    $ranSoftware   = $runSoftwareInventory
 
     $snapshot = [ordered]@{
         ScanTime             = $nowIso
@@ -448,11 +539,14 @@ try {
         ComplianceSummary    = if ($ranCompliance) { $complianceSummary } elseif ($prev) { $prev.ComplianceSummary }        else { $null }
         ExpiringCertificates = if ($ranCert)       { @($expiringCerts) }  elseif ($prev) { @($prev.ExpiringCertificates) }  else { @() }
         ZeroDays             = if ($ranZeroDay)    { @($dashboardZeroDays) } elseif ($prev) { @($prev.ZeroDays) }           else { @() }
+        SoftwareInventory    = if ($ranSoftware)   { @($softwareInventory) } elseif ($prev) { @($prev.SoftwareInventory) }  else { @() }
+        VulnerableSoftware   = if ($ranSoftware)   { @($vulnerableSoftware) } elseif ($prev) { @($prev.VulnerableSoftware) } else { @() }
         Freshness            = [ordered]@{
             Anomalies    = if ($ranAnomaly)    { $nowIso } else { $prevFresh.Anomalies }
             Compliance   = if ($ranCompliance) { $nowIso } else { $prevFresh.Compliance }
             Certificates = if ($ranCert)       { $nowIso } else { $prevFresh.Certificates }
             ZeroDay      = if ($ranZeroDay)    { $nowIso } else { $prevFresh.ZeroDay }
+            SoftwareInventory = if ($ranSoftware) { $nowIso } else { $prevFresh.SoftwareInventory }
         }
     }
 
@@ -477,16 +571,22 @@ if ($JsonOutput) {
     if ($runCertScan) {
         $payload['ExpiringCertificates'] = $expiringCerts
     }
+    if ($runSoftwareInventory) {
+        $payload['SoftwareInventory']  = $softwareInventory
+        $payload['VulnerableSoftware'] = $vulnerableSoftware
+    }
     $payload | ConvertTo-Json -Depth 8
     return
 }
 
-if (($ComplianceScan -and $config.Compliance.Enabled) -or $runCertScan) {
+if (($ComplianceScan -and $config.Compliance.Enabled) -or $runCertScan -or $runSoftwareInventory) {
     return [pscustomobject]@{
         Anomalies            = $allAnomalies
         ComplianceGaps       = $complianceGaps
         Summary              = $complianceSummary
         ExpiringCertificates = $expiringCerts
+        SoftwareInventory    = $softwareInventory
+        VulnerableSoftware   = $vulnerableSoftware
     }
 }
 
