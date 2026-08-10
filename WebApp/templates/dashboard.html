@@ -137,11 +137,11 @@
 
 <div class="stage" id="stage">
   <section class="screen" data-name="Executive Overview"></section>
+  <section class="screen" data-name="Network Discovery"></section>
   <section class="screen" data-name="Compliance Posture"></section>
   <section class="screen" data-name="Threats &amp; Anomalies"></section>
   <section class="screen" data-name="Certificate Expiry"></section>
   <section class="screen" data-name="Software Inventory"></section>
-  <section class="screen" data-name="Network Discovery"></section>
 </div>
 
 <footer>
@@ -370,7 +370,7 @@ function renderDiscovery(d){
    </div>`;
 }
 
-const RENDERERS = [renderOverview, renderCompliance, renderThreats, renderCerts, renderSoftware, renderDiscovery];
+const RENDERERS = [renderOverview, renderDiscovery, renderCompliance, renderThreats, renderCerts, renderSoftware];
 
 function renderAll(){
   if(!data) return;
