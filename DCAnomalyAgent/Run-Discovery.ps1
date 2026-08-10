@@ -15,12 +15,24 @@
 .PARAMETER JsonOutput
     Emit the inventory as JSON on stdout (used by the web UI).
 
+.PARAMETER Fresh
+    Ignore any previously saved inventory at the output location and start clean.
+    By default, each run is MERGED into the existing asset-inventory.json/csv at
+    OutDir, so you can scan subnets in small batches (e.g. one /24 at a time) and
+    the results accumulate in one place instead of overwriting each other. A host
+    re-scanned in a later batch replaces its old entry; hosts not touched in this
+    run are kept as-is from the prior scan(s).
+
 .EXAMPLE
     .\Run-Discovery.ps1 -FromAD
 .EXAMPLE
     .\Run-Discovery.ps1 -Cidr '10.0.0.0/24','10.0.1.0/24'
 .EXAMPLE
     .\Run-Discovery.ps1 -FromAD -Cidr '10.0.0.0/24'
+.EXAMPLE
+    # Scan in bunches on separate days; each run folds into the same inventory file.
+    .\Run-Discovery.ps1 -Cidr '10.15.2.0/24'
+    .\Run-Discovery.ps1 -Cidr '10.15.3.0/24'
 #>
 [CmdletBinding()]
 param(
@@ -28,7 +40,8 @@ param(
     [switch]$FromAD,
     [string[]]$Cidr,
     [int]$TimeoutMs = 700,
-    [switch]$JsonOutput
+    [switch]$JsonOutput,
+    [switch]$Fresh
 )
 
 $ErrorActionPreference = 'Stop'
@@ -67,9 +80,25 @@ if ($Cidr) {
     $netAssets = @(Get-NetworkAsset -Cidr $Cidr -TimeoutMs $TimeoutMs)
 }
 
-$inventory = @(Merge-AssetInventory -AdAssets $adAssets -NetworkAssets $netAssets)
+$newInventory = @(Merge-AssetInventory -AdAssets $adAssets -NetworkAssets $netAssets)
 
-$outDir = Split-Path -Path $config.LogPath -Parent
+$outDir   = Split-Path -Path $config.LogPath -Parent
+$jsonPath = Join-Path $outDir 'asset-inventory.json'
+
+$priorAssets = @()
+if (-not $Fresh -and (Test-Path $jsonPath)) {
+    Write-Verbose "Merging with existing inventory at $jsonPath"
+    $priorAssets = @(Get-Content -Raw -Path $jsonPath | ConvertFrom-Json)
+}
+
+# Consolidate: prior scans first, then this run's results overwrite any
+# matching host (by short name) so re-scanning a host refreshes its data
+# while hosts from earlier batches that weren't touched this run are kept.
+$byKey = @{}
+foreach ($p in $priorAssets) { $byKey[(($p.Name -split '\.')[0]).ToLower()] = $p }
+foreach ($n in $newInventory) { $byKey[(($n.Name -split '\.')[0]).ToLower()] = $n }
+$inventory = @($byKey.Values | Sort-Object AssetType, Name)
+
 $export = Export-AssetInventory -Inventory $inventory -OutputDir $outDir
 
 if ($JsonOutput) {
@@ -81,7 +110,7 @@ if ($JsonOutput) {
     return
 }
 
-Write-Host "`nDiscovered $($inventory.Count) asset(s):`n"
+Write-Host "`nThis run found $($newInventory.Count) asset(s); consolidated inventory now has $($inventory.Count) asset(s) total:`n"
 $inventory | Group-Object AssetType | ForEach-Object {
     Write-Host ("  {0,-18} {1}" -f $_.Name, $_.Count)
 }
