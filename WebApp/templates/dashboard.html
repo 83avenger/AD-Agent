@@ -141,6 +141,7 @@
   <section class="screen" data-name="Threats &amp; Anomalies"></section>
   <section class="screen" data-name="Certificate Expiry"></section>
   <section class="screen" data-name="Software Inventory"></section>
+  <section class="screen" data-name="Network Discovery"></section>
 </div>
 
 <footer>
@@ -342,7 +343,34 @@ function renderSoftware(d){
    </div>`;
 }
 
-const RENDERERS = [renderOverview, renderCompliance, renderThreats, renderCerts, renderSoftware];
+function renderDiscovery(d){
+  const disc = d.discovery || {total:0, by_type:[], by_source:[], assets:[], last_scan:null};
+  const typeCatalog = {'DomainController':'var(--critical)','Windows':'var(--accent)','Linux':'var(--low)',
+    'NetworkDevice':'var(--medium)','Unknown':'var(--muted)'};
+  const rows = disc.assets.length ? disc.assets.map(a=>`
+    <tr><td>${esc(a.Name||'')}</td><td>${esc(a.IP||'')}</td><td>${esc(a.AssetType||'')}</td>
+      <td>${esc(a.OS||'')}</td><td>${esc(a.Source||'')}</td></tr>`).join('')
+    : '<tr><td colspan="5" class="empty">No discovery scan has been run yet</td></tr>';
+  return `
+   <h2>Network Discovery <span class="fresh">consolidated inventory · updated ${timeAgo(disc.last_scan)}</span></h2>
+   <div class="grid" style="grid-template-columns:.9fr 1.6fr; flex:1; min-height:0">
+     <div class="panel">
+       <div class="ph">${disc.total} asset(s) by type</div>
+       ${hbars(disc.by_type, (lab)=>typeCatalog[lab]||'var(--accent)')}
+       <div class="ph" style="margin-top:1.1rem">By discovery source</div>
+       ${hbars(disc.by_source, ()=>'var(--low)')}
+     </div>
+     <div class="panel" style="display:flex;flex-direction:column;min-height:0">
+       <div class="ph">Discovered assets ${disc.assets.length<disc.total?`(showing ${disc.assets.length} of ${disc.total})`:''}</div>
+       <div style="overflow:auto">
+         <table class="mini"><thead><tr><th>Name</th><th>IP</th><th>Type</th><th>OS</th><th>Source</th></tr></thead>
+           <tbody>${rows}</tbody></table>
+       </div>
+     </div>
+   </div>`;
+}
+
+const RENDERERS = [renderOverview, renderCompliance, renderThreats, renderCerts, renderSoftware, renderDiscovery];
 
 function renderAll(){
   if(!data) return;

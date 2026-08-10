@@ -34,6 +34,7 @@ APP_ROOT      = Path(__file__).parent
 PS_SCRIPT     = APP_ROOT.parent / "DCAnomalyAgent" / "Run-AnomalyScan.ps1"
 STATE_DIR     = APP_ROOT.parent / "DCAnomalyAgent" / "State"
 SNAPSHOT_PATH = STATE_DIR / "latest-scan.json"
+DISCOVERY_INVENTORY_PATH = STATE_DIR / "asset-inventory.json"
 REPORTS_DIR   = APP_ROOT / "reports"
 REPORTS_DIR.mkdir(exist_ok=True)
 
@@ -209,6 +210,21 @@ def _load_snapshot() -> tuple[dict, bool]:
     return _mock_result(["dc01.contoso.com"]), True
 
 
+def _load_discovery_inventory() -> tuple[list, str | None]:
+    """Return (assets, last_scan_iso). Empty list if no discovery scan has run yet."""
+    try:
+        if DISCOVERY_INVENTORY_PATH.exists():
+            mtime = datetime.utcfromtimestamp(DISCOVERY_INVENTORY_PATH.stat().st_mtime).isoformat()
+            with open(DISCOVERY_INVENTORY_PATH, encoding="utf-8-sig") as fh:
+                assets = json.load(fh)
+                if isinstance(assets, dict):
+                    assets = [assets]
+                return assets, mtime
+    except Exception:
+        pass
+    return [], None
+
+
 def _sev_counts(items: list, key: str = "Severity") -> dict:
     out = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0}
     for it in items:
@@ -291,6 +307,18 @@ def _dashboard_payload() -> dict:
             sw_products[name] = sw_products.get(name, 0) + 1
     sw_top_products = sorted(sw_products.items(), key=lambda kv: -kv[1])[:8]
 
+    # Discovery inventory (accumulated by Run-Discovery.ps1, independent of the scan snapshot).
+    assets, disc_last_scan = _load_discovery_inventory()
+    by_type: dict = {}
+    for a in assets:
+        t = a.get("AssetType", "Unknown")
+        by_type[t] = by_type.get(t, 0) + 1
+    disc_by_type = sorted(by_type.items(), key=lambda kv: -kv[1])
+    sources: dict = {}
+    for a in assets:
+        s = a.get("Source", "Unknown")
+        sources[s] = sources.get(s, 0) + 1
+
     return {
         "demo": demo,
         "generated": datetime.utcnow().isoformat(),
@@ -330,6 +358,13 @@ def _dashboard_payload() -> dict:
             "top_products": sw_top_products,
             "vulnerable": vuln_sw[:8],
             "vulnerable_count": len(vuln_sw),
+        },
+        "discovery": {
+            "total": len(assets),
+            "by_type": disc_by_type,
+            "by_source": sorted(sources.items(), key=lambda kv: -kv[1]),
+            "last_scan": disc_last_scan,
+            "assets": sorted(assets, key=lambda a: (a.get("AssetType", ""), a.get("Name", "")))[:40],
         },
     }
 
