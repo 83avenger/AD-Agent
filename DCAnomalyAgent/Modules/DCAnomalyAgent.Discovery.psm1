@@ -103,7 +103,7 @@ function Expand-Cidr {
     [Array]::Reverse($ipBytes)
     $ipInt    = [BitConverter]::ToUInt32($ipBytes, 0)
     $hostBits = 32 - $prefix
-    $mask     = [uint32]([uint32]0xFFFFFFFF -shl $hostBits)
+    $mask     = [uint32]((0xFFFFFFFFL -shl $hostBits) -band 0xFFFFFFFFL)
     $network  = $ipInt -band $mask
     $count    = [uint32]([math]::Pow(2, $hostBits))
 
