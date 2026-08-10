@@ -23,14 +23,17 @@
 # Reference: Win32_SystemEnclosure.ChassisTypes (DMTF/SMBIOS type codes).
 $script:LaptopChassisTypes = @(8, 9, 10, 11, 12, 14, 18, 21, 30, 31, 32)
 $script:DesktopChassisTypes = @(3, 4, 5, 6, 7, 13, 15, 16, 35, 36)
+# Rack-mount / server chassis - catches server hardware discovered generically
+# (e.g. via network scan) that wasn't already labeled MemberServer by AD/OS checks.
+$script:ServerChassisTypes = @(17, 23, 28)
 
 function Get-DeviceCategory {
     <#
     .SYNOPSIS
         Resolves a host to Desktop / Laptop / Server / Domain Controller.
     .PARAMETER AssetType
-        DomainController | MemberServer | Workstation (from asset discovery /
-        Get-AssetTargets). Non-Workstation types pass straight through.
+        DomainController | MemberServer | Workstation | Windows (from asset discovery /
+        Get-AssetTargets / network scan). Anything else passes straight through.
     #>
     [CmdletBinding()]
     param(
@@ -40,13 +43,14 @@ function Get-DeviceCategory {
 
     if ($AssetType -eq 'DomainController') { return 'Domain Controller' }
     if ($AssetType -eq 'MemberServer')     { return 'Server' }
-    if ($AssetType -ne 'Workstation')      { return $AssetType }
+    if ($AssetType -notin @('Workstation', 'Windows')) { return $AssetType }
 
     try {
         $chassis = Invoke-Command -ComputerName $ComputerName -ScriptBlock {
             (Get-CimInstance -ClassName Win32_SystemEnclosure -ErrorAction Stop).ChassisTypes
         }
         $codes = @($chassis)
+        if ($codes | Where-Object { $_ -in $script:ServerChassisTypes })  { return 'Server' }
         if ($codes | Where-Object { $_ -in $script:LaptopChassisTypes })  { return 'Laptop' }
         if ($codes | Where-Object { $_ -in $script:DesktopChassisTypes }) { return 'Desktop' }
         return 'Workstation'   # chassis type unrecognized/virtual - keep the generic label

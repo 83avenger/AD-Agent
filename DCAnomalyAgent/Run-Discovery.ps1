@@ -23,6 +23,12 @@
     re-scanned in a later batch replaces its old entry; hosts not touched in this
     run are kept as-is from the prior scan(s).
 
+.PARAMETER SkipCategorize
+    Skip the Desktop/Laptop/Server/Domain Controller device-category probe (an
+    extra WinRM call per Windows host) and leave AssetType as the coarser
+    DomainController/MemberServer/Workstation/Windows discovery label. Use this
+    for a faster first pass over a large range before WinRM/gMSA access is set up.
+
 .EXAMPLE
     .\Run-Discovery.ps1 -FromAD
 .EXAMPLE
@@ -41,11 +47,13 @@ param(
     [string[]]$Cidr,
     [int]$TimeoutMs = 700,
     [switch]$JsonOutput,
-    [switch]$Fresh
+    [switch]$Fresh,
+    [switch]$SkipCategorize
 )
 
 $ErrorActionPreference = 'Stop'
 Import-Module "$PSScriptRoot\Modules\DCAnomalyAgent.Discovery.psm1" -Force
+Import-Module "$PSScriptRoot\Modules\DCAnomalyAgent.SoftwareInventory.psm1" -Force
 
 function Import-AgentConfig {
     # Resolves $PSScriptRoot in settings.psd1 to its own directory (Import-PowerShellDataFile
@@ -81,6 +89,24 @@ if ($Cidr) {
 }
 
 $newInventory = @(Merge-AssetInventory -AdAssets $adAssets -NetworkAssets $netAssets)
+
+# Categorize every Windows asset into Desktop / Laptop / Server / Domain Controller.
+# DomainController/MemberServer resolve without touching the host; Workstation/Windows
+# need one extra WinRM call (Win32_SystemEnclosure) to tell Desktop from Laptop, so it's
+# only attempted where WinRM was seen open during the scan (or the host came from AD,
+# which doesn't record OpenPorts and is worth trying regardless).
+if (-not $SkipCategorize) {
+    foreach ($asset in $newInventory) {
+        if ($asset.AssetType -notin @('DomainController', 'MemberServer', 'Workstation', 'Windows')) { continue }
+        $hasOpenPorts = $null -ne $asset.PSObject.Properties['OpenPorts']
+        if ($hasOpenPorts -and $asset.OpenPorts -notmatch 'WinRM') { continue }  # can't probe without WinRM
+        try {
+            $asset.AssetType = Get-DeviceCategory -ComputerName $asset.Name -AssetType $asset.AssetType
+        } catch {
+            # leave the coarser label on failure (WinRM unreachable, no gMSA access yet, etc.)
+        }
+    }
+}
 
 $outDir   = Split-Path -Path $config.LogPath -Parent
 $jsonPath = Join-Path $outDir 'asset-inventory.json'

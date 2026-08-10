@@ -345,7 +345,8 @@ function renderSoftware(d){
 
 function renderDiscovery(d){
   const disc = d.discovery || {total:0, by_type:[], by_source:[], assets:[], last_scan:null};
-  const typeCatalog = {'DomainController':'var(--critical)','Windows':'var(--accent)','Linux':'var(--low)',
+  const typeCatalog = {'Domain Controller':'var(--critical)','Server':'var(--high)','Desktop':'var(--accent)',
+    'Laptop':'var(--low)','Workstation':'var(--medium)','Windows':'var(--accent)','Linux':'var(--low)',
     'NetworkDevice':'var(--medium)','Unknown':'var(--muted)'};
   const rows = disc.assets.length ? disc.assets.map(a=>`
     <tr><td>${esc(a.Name||'')}</td><td>${esc(a.IP||'')}</td><td>${esc(a.AssetType||'')}</td>
