@@ -130,7 +130,15 @@
     # Asset discovery (used by Run-Discovery.ps1 when no switches are passed)
     Discovery = @{
         FromAD  = $true
-        Subnets = @()   # e.g. @('10.0.0.0/24','10.0.1.0/24') for network scanning
+        # Any mix of prefix sizes is fine (supported range: /16-/32). Replace these
+        # placeholder examples with your real ranges, or leave @() to skip network
+        # scanning and rely on AD-only discovery (FromAD above).
+        Subnets = @(
+            # '10.0.0.0/24'      # example: a full /24 (254 usable hosts)
+            # '10.0.1.0/25'      # example: a /25 (126 usable hosts)
+            # '10.0.1.128/25'    # example: the other half of that /24
+            # '192.168.10.0/26'  # example: a smaller /26 (62 usable hosts)
+        )
     }
 
     # Zero-day / CVE telemetry
