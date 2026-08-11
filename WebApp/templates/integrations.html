@@ -1,0 +1,169 @@
+{% extends "base.html" %}
+{% block title %}Integrations — DC Anomaly Agent{% endblock %}
+
+{% block content %}
+
+<div style="margin: 1.5rem 0 .5rem;">
+  <h1 style="font-size:1.6rem; font-weight:800; color:var(--brand-dark);">Integrations</h1>
+  <p style="color:var(--muted); font-size:.9rem; margin-top:.3rem;">
+    Agentless WinRM/TCP scanning only sees Windows hosts and open-port network devices.
+    These integrations extend discovery to everything else — enable them once the
+    relevant team has provided the access below.
+  </p>
+</div>
+
+{% if error %}
+<div class="alert alert-error">⚠ Status refresh failed: {{ error }}</div>
+{% endif %}
+
+<form method="POST" action="/integrations/refresh" style="margin-bottom:1.5rem;">
+  <div class="dl-bar">
+    <span>
+      {% if status.GeneratedAt %}
+        Status last checked {{ status.GeneratedAt }}
+      {% else %}
+        Status has not been checked yet — run Get-IntegrationStatus.ps1 once, or click refresh.
+      {% endif %}
+    </span>
+    <button type="submit" class="btn btn-outline btn-sm">↻ Refresh status</button>
+  </div>
+</form>
+
+<div class="card">
+  <div class="card-header">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>
+    </svg>
+    What each device class needs
+  </div>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>Device class</th><th>Examples</th><th>Detection method</th><th>Status</th></tr></thead>
+      <tbody>
+        <tr><td>Windows hosts</td><td>Desktops, Laptops, Servers, Domain Controllers</td>
+          <td>Built-in — WinRM (Discovery scan)</td><td><span class="badge badge-low">Working today</span></td></tr>
+        <tr><td>Network-attached devices</td><td>Printers, Switches, Access Points, IP Phones, Cameras, Firewalls</td>
+          <td>SNMP (read-only)</td>
+          <td>{% if status.Snmp.Configured %}<span class="badge badge-low">Configured</span>{% else %}<span class="badge" style="background:var(--border);color:var(--muted)">Not configured</span>{% endif %}</td></tr>
+        <tr><td>Device age</td><td>Any Windows host, by BIOS serial number</td>
+          <td>Vendor warranty API (Dell / HP / Lenovo)</td>
+          <td>{% if status.VendorWarranty.Configured %}<span class="badge badge-low">Configured</span>{% else %}<span class="badge" style="background:var(--border);color:var(--muted)">Not configured</span>{% endif %}</td></tr>
+        <tr><td>MDM-managed devices</td><td>Kiosks / IoT-VLAN tablets, fully-managed Android phones on Wi-Fi</td>
+          <td>MDM API (Intune / Jamf / Android Enterprise) — not reachable by LAN scan</td>
+          <td>{% if status.Mdm.Configured %}<span class="badge badge-low">Configured</span>{% else %}<span class="badge" style="background:var(--border);color:var(--muted)">Not configured</span>{% endif %}</td></tr>
+        <tr><td>Cloudflare WARP remote users</td><td>Home/remote laptops connected via Zero Trust</td>
+          <td>WARP IP range scan (built-in) or Cloudflare API for richer identity</td>
+          <td>{% if status.CloudflareZeroTrust.Configured %}<span class="badge badge-low">Configured</span>{% else %}<span class="badge" style="background:var(--border);color:var(--muted)">Range-scan only</span>{% endif %}</td></tr>
+        <tr><td>USB/Bluetooth peripherals</td><td>Monitors, Scanners, Signature Pads, wireless mice/speakers/mics, satellite phones</td>
+          <td>No IP of their own — only visible via the host PC's USB device list, or an existing asset/CMDB export</td>
+          <td><span class="badge" style="background:var(--border);color:var(--muted)">Not scannable</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/>
+    </svg>
+    1. SNMP — Printers, Switches, Access Points, IP Phones, Cameras, Firewalls
+    {% if status.Snmp.Configured %}<span class="badge badge-low" style="margin-left:auto">Configured</span>{% else %}<span class="badge" style="background:var(--border);color:var(--muted);margin-left:auto">Not configured</span>{% endif %}
+  </div>
+  <p style="font-size:.88rem; color:var(--text); margin-bottom:.8rem;">
+    These devices already appear in the Discovery scan as generic NetworkDevice/Unknown entries
+    (SNMP or Telnet port responded). SNMP polling turns that into model, firmware version, and
+    uptime/status detail.
+  </p>
+  <p style="font-size:.85rem; font-weight:700; color:var(--brand-mid); margin-bottom:.4rem;">Request from the Network/Infrastructure team:</p>
+  <ul style="font-size:.85rem; color:var(--text); padding-left:1.3rem; line-height:1.7;">
+    <li>A <strong>read-only</strong> SNMP community string (v2c) — or preferably per-device <strong>SNMPv3</strong> credentials (authenticated + encrypted, since v2c community strings travel in cleartext)</li>
+    <li>Confirmation that SNMP is actually enabled on the target device classes — many orgs disable it by default for security</li>
+    <li>A firewall/ACL allow rule: <strong>UDP/161</strong> from the jump server IP to the management subnet(s) of these devices</li>
+    <li>The list of subnets/VLANs these devices live on (often a separate management VLAN from user/server subnets)</li>
+  </ul>
+  <p style="font-size:.78rem; color:var(--muted); margin-top:.6rem;">Once provided, set <code>Integrations.Snmp</code> in settings.psd1 and set <code>Enabled = $true</code>.</p>
+</div>
+
+<div class="card">
+  <div class="card-header">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <rect x="1" y="4" width="22" height="16" rx="2"/><line x1="1" y1="10" x2="23" y2="10"/>
+    </svg>
+    2. Vendor warranty APIs — Device age
+    {% if status.VendorWarranty.Configured %}<span class="badge badge-low" style="margin-left:auto">Configured</span>{% else %}<span class="badge" style="background:var(--border);color:var(--muted);margin-left:auto">Not configured</span>{% endif %}
+  </div>
+  <p style="font-size:.88rem; color:var(--text); margin-bottom:.8rem;">
+    A network scan can't tell you how old a device is — BIOS date isn't purchase date. What it
+    <em>can</em> do is pull the BIOS serial number over WinRM (already collectible today) and
+    look that serial up against the manufacturer's warranty API to get ship/purchase date, which
+    is what "age" is actually computed from. Currently alerts on devices
+    ≥ {{ status.VendorWarranty.AgeAlertYears }} years old once populated (configurable).
+  </p>
+  <p style="font-size:.85rem; font-weight:700; color:var(--brand-mid); margin-bottom:.4rem;">Request from IT Asset/Procurement (they hold the vendor account relationship):</p>
+  <ul style="font-size:.85rem; color:var(--text); padding-left:1.3rem; line-height:1.7;">
+    <li><strong>Dell:</strong> a TechDirect API account (API key + secret) — registered against your company's Dell account</li>
+    <li><strong>HP:</strong> an HP Warranty API key via the HP partner/enterprise portal</li>
+    <li><strong>Lenovo:</strong> a Lenovo Warranty API key</li>
+    <li>Outbound <strong>HTTPS/443</strong> from the jump server to each vendor's API endpoint (firewall rule)</li>
+  </ul>
+  <p style="font-size:.78rem; color:var(--muted); margin-top:.6rem;">
+    If your organization already tracks purchase date in an existing asset system/CMDB (like the
+    IT Asset Dashboard export), importing that is usually faster than standing up three vendor
+    API integrations — worth checking before requesting these.
+  </p>
+</div>
+
+<div class="card">
+  <div class="card-header">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <rect x="5" y="2" width="14" height="20" rx="2"/><line x1="12" y1="18" x2="12.01" y2="18"/>
+    </svg>
+    3. MDM — Kiosks (IoT VLAN), fully-managed Android/iOS phones (Wi-Fi)
+    {% if status.Mdm.Configured %}<span class="badge badge-low" style="margin-left:auto">Configured</span>{% else %}<span class="badge" style="background:var(--border);color:var(--muted);margin-left:auto">Not configured</span>{% endif %}
+  </div>
+  <p style="font-size:.88rem; color:var(--text); margin-bottom:.8rem;">
+    Kiosks on an isolated IoT VLAN and managed phones on Wi-Fi are typically unreachable from the
+    jump server by design (VLAN segmentation, client isolation) — and even if reachable, they
+    don't run WinRM/SNMP. Their MDM is the only real source of truth for what they are, their
+    OS/app version, and compliance state.
+  </p>
+  <p style="font-size:.85rem; font-weight:700; color:var(--brand-mid); margin-bottom:.4rem;">Request from the Endpoint/Mobility/Identity team (pick whichever MDM you actually run):</p>
+  <ul style="font-size:.85rem; color:var(--text); padding-left:1.3rem; line-height:1.7;">
+    <li><strong>Microsoft Intune:</strong> an Azure AD app registration with Tenant ID / Client ID / Client Secret, granted the <code>DeviceManagementManagedDevices.Read.All</code> Graph API permission (admin-consented)</li>
+    <li><strong>Jamf Pro:</strong> a Jamf API client (Client ID/Secret) with a read-only device-inventory role, plus your Jamf Pro URL</li>
+    <li><strong>Android Enterprise / Google EMM:</strong> an EMM service account key and your Enterprise ID</li>
+  </ul>
+  <p style="font-size:.78rem; color:var(--muted); margin-top:.6rem;">
+    These are cloud APIs (no firewall path into the IoT/Wi-Fi VLAN needed) — just outbound
+    HTTPS from the jump server to the provider's API endpoint.
+  </p>
+</div>
+
+<div class="card">
+  <div class="card-header">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <path d="M18 10h-1.26A8 8 0 109 20h9a5 5 0 000-10z"/>
+    </svg>
+    4. Cloudflare Zero Trust API — richer WARP device identity (future enhancement)
+    {% if status.CloudflareZeroTrust.Configured %}<span class="badge badge-low" style="margin-left:auto">Configured</span>{% else %}<span class="badge" style="background:var(--border);color:var(--muted);margin-left:auto">Range-scan only</span>{% endif %}
+  </div>
+  <p style="font-size:.88rem; color:var(--text); margin-bottom:.8rem;">
+    Today, remote/home users connecting via WARP are already picked up because Discovery scans
+    the WARP-assigned IP range (tagged <code>Cloudflare WARP</code>). The API integration below
+    would add who's connected and from where, straight from Cloudflare, instead of inferring it
+    from a port scan — not built yet, listed here for when you're ready to prioritize it.
+  </p>
+  <p style="font-size:.85rem; font-weight:700; color:var(--brand-mid); margin-bottom:.4rem;">Request from your Cloudflare admin:</p>
+  <ul style="font-size:.85rem; color:var(--text); padding-left:1.3rem; line-height:1.7;">
+    <li>An API Token scoped to Zero Trust (<code>Devices:Read</code>, <code>Access:Read</code>)</li>
+    <li>Your Cloudflare Account ID</li>
+  </ul>
+</div>
+
+<p style="font-size:.8rem; color:var(--muted); margin-top:1rem;">
+  Fill in credentials under <code>Integrations</code> in <code>DCAnomalyAgent\Config\settings.psd1</code>,
+  set the relevant <code>Enabled = $true</code>, then click "Refresh status" above.
+</p>
+
+{% endblock %}

@@ -35,6 +35,8 @@ PS_SCRIPT     = APP_ROOT.parent / "DCAnomalyAgent" / "Run-AnomalyScan.ps1"
 STATE_DIR     = APP_ROOT.parent / "DCAnomalyAgent" / "State"
 SNAPSHOT_PATH = STATE_DIR / "latest-scan.json"
 DISCOVERY_INVENTORY_PATH = STATE_DIR / "asset-inventory.json"
+INTEGRATIONS_STATUS_PATH = STATE_DIR / "integrations-status.json"
+INTEGRATIONS_SCRIPT      = APP_ROOT.parent / "DCAnomalyAgent" / "Get-IntegrationStatus.ps1"
 REPORTS_DIR   = APP_ROOT / "reports"
 REPORTS_DIR.mkdir(exist_ok=True)
 
@@ -208,6 +210,28 @@ def _load_snapshot() -> tuple[dict, bool]:
     except Exception:
         pass
     return _mock_result(["dc01.contoso.com"]), True
+
+
+def _load_integration_status() -> dict:
+    """Status of optional SNMP/vendor-warranty/MDM/Cloudflare integrations.
+    Empty/unconfigured defaults if the status file hasn't been generated yet."""
+    empty = {"Enabled": False, "Configured": False}
+    default = {
+        "GeneratedAt": None,
+        "Snmp": dict(empty, Version="v2c"),
+        "VendorWarranty": dict(empty, ByVendor={"Dell": False, "Hp": False, "Lenovo": False}, AgeAlertYears=4),
+        "Mdm": dict(empty, Provider=""),
+        "CloudflareZeroTrust": dict(empty),
+    }
+    try:
+        if INTEGRATIONS_STATUS_PATH.exists():
+            with open(INTEGRATIONS_STATUS_PATH, encoding="utf-8-sig") as fh:
+                data = json.load(fh)
+                default.update(data)
+                return default
+    except Exception:
+        pass
+    return default
 
 
 def _load_discovery_inventory() -> tuple[list, str | None]:
@@ -418,6 +442,31 @@ def api_discovery_asset(name: str):
     if not match:
         return jsonify({"error": "not found"}), 404
     return jsonify(match)
+
+
+@app.route("/integrations")
+def integrations():
+    """Status + setup requirements for optional SNMP/vendor-warranty/MDM/Cloudflare
+    integrations that extend discovery beyond what agentless WinRM/TCP scanning sees."""
+    return render_template("integrations.html", status=_load_integration_status())
+
+
+@app.route("/integrations/refresh", methods=["POST"])
+def integrations_refresh():
+    """Re-run Get-IntegrationStatus.ps1 to pick up config changes, then redisplay."""
+    pwsh = _detect_powershell()
+    error = None
+    if pwsh:
+        try:
+            subprocess.run(
+                [pwsh, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(INTEGRATIONS_SCRIPT)],
+                capture_output=True, text=True, timeout=30,
+            )
+        except Exception as exc:
+            error = str(exc)
+    else:
+        error = "PowerShell (pwsh/powershell) not found on PATH."
+    return render_template("integrations.html", status=_load_integration_status(), error=error)
 
 
 @app.route("/scan", methods=["POST"])

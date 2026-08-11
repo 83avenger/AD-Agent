@@ -205,6 +205,61 @@
         ReportOutputPath = "$PSScriptRoot\..\State\software-inventory-report.md"
     }
 
+    # Third-party integrations that extend discovery beyond what an agentless
+    # WinRM/TCP scan alone can see. All disabled/empty until credentials are
+    # supplied by the relevant team - see the web UI's Integrations page for what
+    # to request from each team. None of these are required for core discovery,
+    # compliance, anomaly, certificate, or software-inventory scanning to work.
+    Integrations = @{
+        # SNMP read-only polling of network-attached, non-Windows devices that
+        # already show up in a network scan as NetworkDevice/Unknown (Printers,
+        # Switches, Access Points, IP Phones, Cameras, Firewalls). Enables pulling
+        # sysDescr/model/firmware instead of just "port 161 is open".
+        Snmp = @{
+            Enabled   = $false
+            Version   = 'v2c'   # 'v2c' (community string) or 'v3' (per-device credentials)
+            Community = ''      # v2c read-only community string
+            V3 = @{
+                Username     = ''
+                AuthProtocol = 'SHA'
+                AuthPassword = ''
+                PrivProtocol = 'AES'
+                PrivPassword = ''
+            }
+        }
+
+        # Vendor warranty/asset APIs, used to resolve a Windows host's BIOS serial
+        # number (already collectible over WinRM) to a ship/purchase date, so
+        # device age can be reported without needing a separate CMDB.
+        VendorWarranty = @{
+            Enabled = $false
+            Dell    = @{ ApiKey = ''; ApiSecret = '' }   # Dell TechDirect API
+            Hp      = @{ ApiKey = '' }                    # HP Warranty API
+            Lenovo  = @{ ApiKey = '' }                     # Lenovo Warranty API
+            AgeAlertYears = 4   # flag devices at/above this age once populated
+        }
+
+        # MDM-managed devices (kiosks/IoT-VLAN tablets, fully-managed Android
+        # phones on Wi-Fi) are not reachable by our LAN/WinRM scan - only their
+        # MDM's own API can enumerate and detail them.
+        Mdm = @{
+            Enabled  = $false
+            Provider = ''   # 'Intune' | 'Jamf' | 'AndroidEnterprise'
+            Intune = @{ TenantId = ''; ClientId = ''; ClientSecret = '' }
+            Jamf   = @{ Url = ''; ClientId = ''; ClientSecret = '' }
+            AndroidEnterprise = @{ EnterpriseId = ''; ServiceAccountKeyPath = '' }
+        }
+
+        # Cloudflare Zero Trust API - device/user identity for WARP-connected
+        # remote users, as a richer alternative to just scanning the WARP IP
+        # range (which Discovery already does). Documented future enhancement.
+        CloudflareZeroTrust = @{
+            Enabled  = $false
+            ApiToken = ''
+            AccountId = ''
+        }
+    }
+
     # Rotating dashboard snapshot. Every scan run merges its section(s) into this
     # file; the web UI dashboard reads it. Because each scheduled task runs one
     # scan type, the merge preserves the other sections from prior runs.
