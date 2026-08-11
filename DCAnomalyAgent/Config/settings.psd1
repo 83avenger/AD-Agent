@@ -139,6 +139,18 @@
             # '10.0.1.128/25'    # example: the other half of that /24
             # '192.168.10.0/26'  # example: a smaller /26 (62 usable hosts)
         )
+        # Cloudflare WARP/Zero Trust virtual IP range(s) assigned to remote/home users
+        # connecting into the network. Scanned the same way as Subnets above, but tagged
+        # with Source = 'Cloudflare WARP' so remote devices are distinguishable on the
+        # Discovery dashboard from on-prem LAN hosts. Get the exact range from your
+        # Cloudflare Zero Trust dashboard (Settings > WARP Client > Device settings profile
+        # > Split Tunnels, or the tunnel's configured private network route).
+        # A future enhancement can pull device/user identity directly from the Cloudflare
+        # Zero Trust API instead of relying on a port scan; for now this just extends the
+        # network scan to that range so those hosts show up like any other discovered asset.
+        CloudflareWarpSubnets = @(
+            # '100.96.0.0/12'  # example only - replace with your actual WARP-assigned range
+        )
     }
 
     # Zero-day / CVE telemetry

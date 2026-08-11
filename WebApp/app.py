@@ -225,6 +225,21 @@ def _load_discovery_inventory() -> tuple[list, str | None]:
     return [], None
 
 
+ONLINE_THRESHOLD_MINUTES = 20
+
+
+def _is_online(last_seen_iso: str | None) -> bool:
+    """A host counts as online if it answered a probe within the last 20 minutes."""
+    if not last_seen_iso:
+        return False
+    try:
+        seen = datetime.fromisoformat(last_seen_iso.replace("Z", "+00:00"))
+        now = datetime.now(seen.tzinfo) if seen.tzinfo else datetime.utcnow()
+        return (now - seen).total_seconds() <= ONLINE_THRESHOLD_MINUTES * 60
+    except Exception:
+        return False
+
+
 def _sev_counts(items: list, key: str = "Severity") -> dict:
     out = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0}
     for it in items:
@@ -361,10 +376,16 @@ def _dashboard_payload() -> dict:
         },
         "discovery": {
             "total": len(assets),
+            "online": len([a for a in assets if _is_online(a.get("LastSeen"))]),
             "by_type": disc_by_type,
             "by_source": sorted(sources.items(), key=lambda kv: -kv[1]),
             "last_scan": disc_last_scan,
-            "assets": sorted(assets, key=lambda a: (a.get("AssetType", ""), a.get("Name", "")))[:40],
+            # Software omitted here (fetched on demand via /api/discovery/asset/<name>)
+            # to keep the polled dashboard payload small.
+            "assets": [
+                {k: v for k, v in a.items() if k != "Software"}
+                for a in sorted(assets, key=lambda a: (a.get("AssetType", ""), a.get("Name", "")))[:40]
+            ],
         },
     }
 
@@ -386,6 +407,17 @@ def dashboard():
 def api_dashboard():
     """JSON aggregates powering the rotating dashboard; polled periodically by the page."""
     return jsonify(_dashboard_payload())
+
+
+@app.route("/api/discovery/asset/<path:name>")
+def api_discovery_asset(name: str):
+    """Full detail (incl. installed software) for one discovered device, read fresh
+    from asset-inventory.json — the dashboard payload only carries a trimmed list."""
+    assets, _ = _load_discovery_inventory()
+    match = next((a for a in assets if str(a.get("Name", "")).lower() == name.lower()), None)
+    if not match:
+        return jsonify({"error": "not found"}), 404
+    return jsonify(match)
 
 
 @app.route("/scan", methods=["POST"])

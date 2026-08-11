@@ -132,63 +132,116 @@ function Get-NetworkAsset {
     param(
         [Parameter(Mandatory)][string[]]$Cidr,
         [int]$TimeoutMs = 700,
-        [int]$ThrottleLimit = 64
+        [int]$ThrottleLimit = 64,
+        # Tags every host found in this call, e.g. 'Cloudflare WARP' for remote/home
+        # users connecting in via Zero Trust, vs the default on-prem 'NetworkScan'.
+        [string]$SourceLabel = 'NetworkScan'
     )
 
     $ips = foreach ($c in $Cidr) { Expand-Cidr -Cidr $c }
 
-    $probe = {
-        param($ip, $TimeoutMs)
-
-        function _port($h, $p, $t) {
-            try {
-                $cl = [System.Net.Sockets.TcpClient]::new()
-                $a  = $cl.BeginConnect($h, $p, $null, $null)
-                $r  = $a.AsyncWaitHandle.WaitOne($t)
-                $open = $r -and $cl.Connected
-                if ($open) { $cl.EndConnect($a) }
-                $cl.Close()
-                return $open
-            } catch { return $false }
-        }
-
-        $ports = @{
-            SMB     = _port $ip 445  $TimeoutMs
-            WinRM   = _port $ip 5985 $TimeoutMs
-            RPC     = _port $ip 135  $TimeoutMs
-            SSH     = _port $ip 22   $TimeoutMs
-            LDAP    = _port $ip 389  $TimeoutMs
-            Kerberos= _port $ip 88   $TimeoutMs
-            SNMP    = _port $ip 161  $TimeoutMs
-            Telnet  = _port $ip 23   $TimeoutMs
-            HTTPS   = _port $ip 443  $TimeoutMs
-        }
-
-        if (-not ($ports.Values -contains $true)) { return }  # host appears dead
-
-        $isWindows = $ports.SMB -or $ports.WinRM -or $ports.RPC
-        $assetType =
-            if ($ports.LDAP -and $ports.Kerberos -and $isWindows) { 'DomainController' }
-            elseif ($isWindows)        { 'Windows' }            # role refined later via AD/WinRM
-            elseif ($ports.SSH)        { 'Linux' }
-            elseif ($ports.SNMP -or $ports.Telnet) { 'NetworkDevice' }
-            else                       { 'Unknown' }
-
-        $name = try { [System.Net.Dns]::GetHostEntry($ip).HostName } catch { $ip }
-
-        [pscustomobject]@{
-            Name      = $name
-            IP        = $ip
-            AssetType = $assetType
-            OpenPorts = ($ports.GetEnumerator() | Where-Object Value | ForEach-Object Key) -join ','
-            Source    = 'NetworkScan'
-        }
-    }
-
+    # NOTE: ForEach-Object -Parallel does not support -ArgumentList (that belongs to a
+    # different parameter set) and its runspaces don't inherit module-scope functions, so
+    # the parallel (PS7+) and sequential (PS5.1) probes are two self-contained scriptblocks
+    # rather than one shared one passed in different ways.
     if ($PSVersionTable.PSVersion.Major -ge 7) {
-        $ips | ForEach-Object -Parallel $probe -ArgumentList $TimeoutMs -ThrottleLimit $ThrottleLimit
+        $ips | ForEach-Object -Parallel {
+            $ip          = $_
+            $TimeoutMs   = $using:TimeoutMs
+            $SourceLabel = $using:SourceLabel
+
+            function _port($h, $p, $t) {
+                try {
+                    $cl = [System.Net.Sockets.TcpClient]::new()
+                    $a  = $cl.BeginConnect($h, $p, $null, $null)
+                    $r  = $a.AsyncWaitHandle.WaitOne($t)
+                    $open = $r -and $cl.Connected
+                    if ($open) { $cl.EndConnect($a) }
+                    $cl.Close()
+                    return $open
+                } catch { return $false }
+            }
+
+            $ports = @{
+                SMB     = _port $ip 445  $TimeoutMs
+                WinRM   = _port $ip 5985 $TimeoutMs
+                RPC     = _port $ip 135  $TimeoutMs
+                SSH     = _port $ip 22   $TimeoutMs
+                LDAP    = _port $ip 389  $TimeoutMs
+                Kerberos= _port $ip 88   $TimeoutMs
+                SNMP    = _port $ip 161  $TimeoutMs
+                Telnet  = _port $ip 23   $TimeoutMs
+                HTTPS   = _port $ip 443  $TimeoutMs
+            }
+
+            if (-not ($ports.Values -contains $true)) { return }  # host appears dead
+
+            $isWinHost = $ports.SMB -or $ports.WinRM -or $ports.RPC
+            $assetType =
+                if ($ports.LDAP -and $ports.Kerberos -and $isWinHost) { 'DomainController' }
+                elseif ($isWinHost)        { 'Windows' }            # role refined later via AD/WinRM
+                elseif ($ports.SSH)        { 'Linux' }
+                elseif ($ports.SNMP -or $ports.Telnet) { 'NetworkDevice' }
+                else                       { 'Unknown' }
+
+            $name = try { [System.Net.Dns]::GetHostEntry($ip).HostName } catch { $ip }
+
+            [pscustomobject]@{
+                Name      = $name
+                IP        = $ip
+                AssetType = $assetType
+                OpenPorts = ($ports.GetEnumerator() | Where-Object Value | ForEach-Object Key) -join ','
+                Source    = $SourceLabel
+                LastSeen  = (Get-Date).ToString('o')
+            }
+        } -ThrottleLimit $ThrottleLimit
     } else {
-        foreach ($ip in $ips) { & $probe $ip $TimeoutMs }
+        foreach ($ip in $ips) {
+            function _port($h, $p, $t) {
+                try {
+                    $cl = [System.Net.Sockets.TcpClient]::new()
+                    $a  = $cl.BeginConnect($h, $p, $null, $null)
+                    $r  = $a.AsyncWaitHandle.WaitOne($t)
+                    $open = $r -and $cl.Connected
+                    if ($open) { $cl.EndConnect($a) }
+                    $cl.Close()
+                    return $open
+                } catch { return $false }
+            }
+
+            $ports = @{
+                SMB     = _port $ip 445  $TimeoutMs
+                WinRM   = _port $ip 5985 $TimeoutMs
+                RPC     = _port $ip 135  $TimeoutMs
+                SSH     = _port $ip 22   $TimeoutMs
+                LDAP    = _port $ip 389  $TimeoutMs
+                Kerberos= _port $ip 88   $TimeoutMs
+                SNMP    = _port $ip 161  $TimeoutMs
+                Telnet  = _port $ip 23   $TimeoutMs
+                HTTPS   = _port $ip 443  $TimeoutMs
+            }
+
+            if (-not ($ports.Values -contains $true)) { continue }  # host appears dead
+
+            $isWinHost = $ports.SMB -or $ports.WinRM -or $ports.RPC
+            $assetType =
+                if ($ports.LDAP -and $ports.Kerberos -and $isWinHost) { 'DomainController' }
+                elseif ($isWinHost)        { 'Windows' }
+                elseif ($ports.SSH)        { 'Linux' }
+                elseif ($ports.SNMP -or $ports.Telnet) { 'NetworkDevice' }
+                else                       { 'Unknown' }
+
+            $name = try { [System.Net.Dns]::GetHostEntry($ip).HostName } catch { $ip }
+
+            [pscustomobject]@{
+                Name      = $name
+                IP        = $ip
+                AssetType = $assetType
+                OpenPorts = ($ports.GetEnumerator() | Where-Object Value | ForEach-Object Key) -join ','
+                Source    = $SourceLabel
+                LastSeen  = (Get-Date).ToString('o')
+            }
+        }
     }
 }
 
@@ -213,9 +266,11 @@ function Merge-AssetInventory {
     foreach ($n in $NetworkAssets) {
         $key = ($n.Name -split '\.')[0].ToLower()
         if ($byName.ContainsKey($key)) {
-            # AD already has it - annotate with discovered open ports
+            # AD already has it - annotate with discovered open ports and the live-response
+            # timestamp from the network probe (AD membership alone doesn't prove reachability).
             $byName[$key] | Add-Member -NotePropertyName OpenPorts -NotePropertyValue $n.OpenPorts -Force
-            $byName[$key] | Add-Member -NotePropertyName Source -NotePropertyValue 'AD+NetworkScan' -Force
+            $byName[$key] | Add-Member -NotePropertyName Source -NotePropertyValue "AD+$($n.Source)" -Force
+            $byName[$key] | Add-Member -NotePropertyName LastSeen -NotePropertyValue $n.LastSeen -Force
         } else {
             $byName[$key] = $n   # network-only (non-domain / non-Windows)
         }
@@ -242,8 +297,10 @@ function Export-AssetInventory {
     $csvPath  = Join-Path $OutputDir 'asset-inventory.csv'
     $psd1Path = Join-Path $OutputDir 'discovered-assets.psd1.txt'
 
-    $Inventory | ConvertTo-Json -Depth 5 | Set-Content -Path $jsonPath -Encoding UTF8
-    $Inventory | Select-Object Name, IP, AssetType, OS, OpenPorts, Source |
+    $Inventory | ConvertTo-Json -Depth 6 | Set-Content -Path $jsonPath -Encoding UTF8
+    # Software is a nested per-host array (kept in the JSON for the dashboard's per-device
+    # drill-down) and is intentionally left out of the flat CSV.
+    $Inventory | Select-Object Name, IP, AssetType, OS, OpenPorts, Source, LastSeen |
         Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8
 
     # Emit a settings.psd1-style Assets snippet

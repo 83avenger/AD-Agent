@@ -120,6 +120,24 @@
   .ctrl{color:var(--muted); font-size:.78rem; font-weight:600; display:flex; align-items:center; gap:.4rem}
   .ctrl kbd{background:var(--panel); border:1px solid var(--border); border-radius:4px; padding:.05rem .35rem; font-size:.72rem}
   .paused-flag{color:var(--medium); font-weight:800}
+
+  /* Device detail modal */
+  .clickable-row{cursor:pointer}
+  .clickable-row:hover{background:rgba(255,255,255,.04)}
+  .modal-backdrop{position:fixed; inset:0; background:rgba(3,6,14,.7); backdrop-filter:blur(2px);
+    display:flex; align-items:center; justify-content:center; z-index:50}
+  .modal-backdrop.hidden{display:none}
+  .modal{background:linear-gradient(180deg,var(--panel) 0%,var(--panel2) 100%); border:1px solid var(--border);
+    border-radius:14px; width:min(720px,92vw); max-height:82vh; display:flex; flex-direction:column; overflow:hidden}
+  .modal-head{display:flex; align-items:center; gap:.8rem; padding:1rem 1.3rem; border-bottom:1px solid var(--border)}
+  .modal-head h3{font-size:1.05rem}
+  .modal-head .close{margin-left:auto; cursor:pointer; color:var(--muted); font-size:1.3rem; line-height:1; background:none; border:none}
+  .modal-head .close:hover{color:var(--text)}
+  .modal-body{padding:1.1rem 1.3rem; overflow:auto}
+  .modal-meta{display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:.7rem; margin-bottom:1.1rem}
+  .modal-meta div{background:rgba(255,255,255,.02); border:1px solid var(--border); border-radius:8px; padding:.55rem .7rem}
+  .modal-meta .k{color:var(--muted); font-size:.7rem; text-transform:uppercase; letter-spacing:.5px; font-weight:700}
+  .modal-meta .v{font-weight:700; margin-top:.15rem}
 </style>
 </head>
 <body>
@@ -142,6 +160,16 @@
   <section class="screen" data-name="Threats &amp; Anomalies"></section>
   <section class="screen" data-name="Certificate Expiry"></section>
   <section class="screen" data-name="Software Inventory"></section>
+</div>
+
+<div class="modal-backdrop hidden" id="deviceModal" onclick="if(event.target===this) closeDeviceModal()">
+  <div class="modal">
+    <div class="modal-head">
+      <h3 id="deviceModalTitle">Device</h3>
+      <button class="close" onclick="closeDeviceModal()" aria-label="Close">&times;</button>
+    </div>
+    <div class="modal-body" id="deviceModalBody"></div>
+  </div>
 </div>
 
 <footer>
@@ -343,17 +371,25 @@ function renderSoftware(d){
    </div>`;
 }
 
+function onlineBadge(lastSeen){
+  const t = lastSeen ? new Date(lastSeen).getTime() : NaN;
+  const online = !isNaN(t) && (Date.now()-t) <= 20*60*1000;
+  return online
+    ? `<span style="color:var(--success);font-weight:800">&#9679; Online</span>`
+    : `<span style="color:var(--muted)">&#9675; ${lastSeen?('seen '+timeAgo(lastSeen)):'never seen'}</span>`;
+}
 function renderDiscovery(d){
-  const disc = d.discovery || {total:0, by_type:[], by_source:[], assets:[], last_scan:null};
+  const disc = d.discovery || {total:0, online:0, by_type:[], by_source:[], assets:[], last_scan:null};
   const typeCatalog = {'Domain Controller':'var(--critical)','Server':'var(--high)','Desktop':'var(--accent)',
     'Laptop':'var(--low)','Workstation':'var(--medium)','Windows':'var(--accent)','Linux':'var(--low)',
     'NetworkDevice':'var(--medium)','Unknown':'var(--muted)'};
   const rows = disc.assets.length ? disc.assets.map(a=>`
-    <tr><td>${esc(a.Name||'')}</td><td>${esc(a.IP||'')}</td><td>${esc(a.AssetType||'')}</td>
-      <td>${esc(a.OS||'')}</td><td>${esc(a.Source||'')}</td></tr>`).join('')
-    : '<tr><td colspan="5" class="empty">No discovery scan has been run yet</td></tr>';
+    <tr class="clickable-row" onclick="openDeviceModal('${esc(a.Name||'').replace(/'/g,"\\'")}')">
+      <td>${esc(a.Name||'')}</td><td>${esc(a.IP||'')}</td><td>${esc(a.AssetType||'')}</td>
+      <td>${esc(a.OS||'')}</td><td>${esc(a.Source||'')}</td><td>${onlineBadge(a.LastSeen)}</td></tr>`).join('')
+    : '<tr><td colspan="6" class="empty">No discovery scan has been run yet</td></tr>';
   return `
-   <h2>Network Discovery <span class="fresh">consolidated inventory · updated ${timeAgo(disc.last_scan)}</span></h2>
+   <h2>Network Discovery <span class="fresh">${disc.online}/${disc.total} online now · updated ${timeAgo(disc.last_scan)}</span></h2>
    <div class="grid" style="grid-template-columns:.9fr 1.6fr; flex:1; min-height:0">
      <div class="panel">
        <div class="ph">${disc.total} asset(s) by type</div>
@@ -362,9 +398,9 @@ function renderDiscovery(d){
        ${hbars(disc.by_source, ()=>'var(--low)')}
      </div>
      <div class="panel" style="display:flex;flex-direction:column;min-height:0">
-       <div class="ph">Discovered assets ${disc.assets.length<disc.total?`(showing ${disc.assets.length} of ${disc.total})`:''}</div>
+       <div class="ph">Discovered assets ${disc.assets.length<disc.total?`(showing ${disc.assets.length} of ${disc.total})`:''} &middot; click a row for installed software</div>
        <div style="overflow:auto">
-         <table class="mini"><thead><tr><th>Name</th><th>IP</th><th>Type</th><th>OS</th><th>Source</th></tr></thead>
+         <table class="mini"><thead><tr><th>Name</th><th>IP</th><th>Type</th><th>OS</th><th>Source</th><th>Status</th></tr></thead>
            <tbody>${rows}</tbody></table>
        </div>
      </div>
@@ -402,6 +438,43 @@ function tick(now){
   rafId=requestAnimationFrame(tick);
 }
 function setPaused(v){ paused=v; document.getElementById('pausedFlag').style.display=v?'inline':'none'; if(!v) tickStart=performance.now(); }
+
+/* ── Device detail modal ──────────────────────────────────────────── */
+async function openDeviceModal(name){
+  const backdrop = document.getElementById('deviceModal');
+  const body = document.getElementById('deviceModalBody');
+  document.getElementById('deviceModalTitle').textContent = name;
+  body.innerHTML = '<div class="empty">Loading…</div>';
+  backdrop.classList.remove('hidden');
+  setPaused(true);
+  try{
+    const r = await fetch('/api/discovery/asset/' + encodeURIComponent(name), {cache:'no-store'});
+    if(!r.ok){ body.innerHTML = '<div class="empty">No detail available for this device</div>'; return; }
+    const a = await r.json();
+    const sw = a.Software || [];
+    const swRows = sw.length ? sw.map(s=>`
+      <tr><td>${esc(s.Name||'')}</td><td>${esc(s.Version||'')}</td><td>${esc(s.Publisher||'')}</td>
+        <td>${esc(s.Architecture||'')}</td></tr>`).join('')
+      : '<tr><td colspan="4" class="empty">No software collected for this device yet (needs WinRM reachability)</td></tr>';
+    body.innerHTML = `
+      <div class="modal-meta">
+        <div><div class="k">IP</div><div class="v">${esc(a.IP||'—')}</div></div>
+        <div><div class="k">Type</div><div class="v">${esc(a.AssetType||'—')}</div></div>
+        <div><div class="k">Source</div><div class="v">${esc(a.Source||'—')}</div></div>
+        <div><div class="k">Status</div><div class="v">${onlineBadge(a.LastSeen)}</div></div>
+      </div>
+      <div class="ph">Installed software (${sw.length})</div>
+      <table class="mini"><thead><tr><th>Name</th><th>Version</th><th>Publisher</th><th>Arch</th></tr></thead>
+        <tbody>${swRows}</tbody></table>`;
+  } catch(e){
+    body.innerHTML = '<div class="empty">Failed to load device detail</div>';
+  }
+}
+function closeDeviceModal(){
+  document.getElementById('deviceModal').classList.add('hidden');
+  setPaused(false);
+}
+addEventListener('keydown', e=>{ if(e.key==='Escape') closeDeviceModal(); });
 
 /* ── Data ─────────────────────────────────────────────────────────── */
 async function refresh(){
