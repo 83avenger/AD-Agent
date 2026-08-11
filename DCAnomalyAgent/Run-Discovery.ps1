@@ -87,6 +87,23 @@ function Import-AgentConfig {
 
 $config = Import-AgentConfig -Path $ConfigPath
 
+function Write-DiscoveryLog {
+    <#
+    .SYNOPSIS
+        Timestamped trace to both console and State\discovery.log, so you can see WHY a
+        host was skipped/failed for categorization or software collection without needing
+        -Verbose live (e.g. from the web UI, which doesn't surface console output).
+    #>
+    param([string]$Message, [ValidateSet('INFO', 'SKIP', 'ERROR')][string]$Level = 'INFO')
+    $line = "[{0:yyyy-MM-dd HH:mm:ss}] [{1}] {2}" -f (Get-Date), $Level, $Message
+    Write-Host $line
+    try {
+        $logDir = Split-Path -Path $config.LogPath -Parent
+        if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
+        Add-Content -Path (Join-Path $logDir 'discovery.log') -Value $line
+    } catch { }
+}
+
 # Fall back to configured Discovery settings if no switches passed
 if (-not $FromAD -and -not $Cidr) {
     if ($config.Discovery) {
@@ -102,18 +119,22 @@ $adAssets  = @()
 $netAssets = @()
 
 if ($FromAD) {
-    Write-Verbose "Discovering from Active Directory..."
+    Write-DiscoveryLog "Discovering from Active Directory..."
     $adAssets = @(Get-ADAsset -EnabledOnly)
+    Write-DiscoveryLog "AD discovery found $($adAssets.Count) computer object(s)."
 }
 
 if ($Cidr) {
-    Write-Verbose "Scanning network ranges: $($Cidr -join ', ')"
+    Write-DiscoveryLog "Scanning network ranges: $($Cidr -join ', ')"
     $netAssets += @(Get-NetworkAsset -Cidr $Cidr -TimeoutMs $TimeoutMs)
+    Write-DiscoveryLog "Network scan found $($netAssets.Count) live host(s) so far."
 }
 
 if ($CloudflareWarpCidr) {
-    Write-Verbose "Scanning Cloudflare WARP range(s): $($CloudflareWarpCidr -join ', ')"
-    $netAssets += @(Get-NetworkAsset -Cidr $CloudflareWarpCidr -TimeoutMs $TimeoutMs -SourceLabel 'Cloudflare WARP')
+    Write-DiscoveryLog "Scanning Cloudflare WARP range(s): $($CloudflareWarpCidr -join ', ')"
+    $warpAssets = @(Get-NetworkAsset -Cidr $CloudflareWarpCidr -TimeoutMs $TimeoutMs -SourceLabel 'Cloudflare WARP')
+    Write-DiscoveryLog "Cloudflare WARP scan found $($warpAssets.Count) live host(s)."
+    $netAssets += $warpAssets
 }
 
 $newInventory = @(Merge-AssetInventory -AdAssets $adAssets -NetworkAssets $netAssets)
@@ -127,11 +148,18 @@ if (-not $SkipCategorize) {
     foreach ($asset in $newInventory) {
         if ($asset.AssetType -notin @('DomainController', 'MemberServer', 'Workstation', 'Windows')) { continue }
         $hasOpenPorts = $null -ne $asset.PSObject.Properties['OpenPorts']
-        if ($hasOpenPorts -and $asset.OpenPorts -notmatch 'WinRM') { continue }  # can't probe without WinRM
+        if ($hasOpenPorts -and $asset.OpenPorts -notmatch 'WinRM') {
+            $note = "Not categorized: WinRM (5985/5986) was not seen open during the network scan (ports seen: $($asset.OpenPorts)). Category probe and software collection both need WinRM."
+            Write-DiscoveryLog "SKIP categorize/software for $($asset.Name) ($($asset.IP)): WinRM not open (ports: $($asset.OpenPorts))" -Level SKIP
+            $asset | Add-Member -NotePropertyName CollectionNote -NotePropertyValue $note -Force
+            continue
+        }
         try {
             $asset.AssetType = Get-DeviceCategory -ComputerName $asset.Name -AssetType $asset.AssetType
         } catch {
-            # leave the coarser label on failure (WinRM unreachable, no gMSA access yet, etc.)
+            $note = "Category probe failed over WinRM: $_. Common causes: gMSA lacks Remote Management Users on this host, WinRM is open but not configured for this identity, or the host is genuinely unreachable."
+            Write-DiscoveryLog "ERROR categorize $($asset.Name): $_" -Level ERROR
+            $asset | Add-Member -NotePropertyName CollectionNote -NotePropertyValue $note -Force
         }
     }
 }
@@ -144,15 +172,24 @@ $softwareInventory  = @()
 $vulnerableSoftware = @()
 if (-not $SkipSoftwareInventory) {
     $swTargets = @($newInventory | Where-Object { $_.AssetType -in @('Domain Controller', 'Server', 'Desktop', 'Laptop', 'Workstation') })
+    Write-DiscoveryLog "Software inventory: $($swTargets.Count) Windows host(s) categorized and eligible for collection."
     foreach ($asset in $swTargets) {
         $hasOpenPorts = $null -ne $asset.PSObject.Properties['OpenPorts']
-        if ($hasOpenPorts -and $asset.OpenPorts -notmatch 'WinRM') { continue }  # can't probe without WinRM
+        if ($hasOpenPorts -and $asset.OpenPorts -notmatch 'WinRM') {
+            Write-DiscoveryLog "SKIP software collection for $($asset.Name) ($($asset.IP)): WinRM not open (ports: $($asset.OpenPorts))" -Level SKIP
+            if (-not $asset.PSObject.Properties['CollectionNote']) {
+                $asset | Add-Member -NotePropertyName CollectionNote -NotePropertyValue "No software collected this run: WinRM (5985/5986) was not seen open during the network scan (ports seen: $($asset.OpenPorts)). Any software list shown is from an earlier successful scan, if one exists." -Force
+            }
+            continue
+        }
         try {
             $sw = @(Get-InstalledSoftware -ComputerName $asset.Name -Category $asset.AssetType)
             $asset | Add-Member -NotePropertyName Software -NotePropertyValue $sw -Force
             $softwareInventory += $sw
+            Write-DiscoveryLog "Software inventory: $($sw.Count) product(s) collected from $($asset.Name)."
         } catch {
-            Write-Verbose "Software inventory failed for $($asset.Name): $_"
+            Write-DiscoveryLog "ERROR software collection on $($asset.Name): $_" -Level ERROR
+            $asset | Add-Member -NotePropertyName CollectionNote -NotePropertyValue "Software collection failed over WinRM: $_. Common causes: gMSA lacks Remote Management Users on this host, WinRM listener not configured for this identity, firewall blocking 5985/5986 from the jump server, or the host is genuinely unreachable." -Force
         }
     }
 
@@ -162,10 +199,10 @@ if (-not $SkipSoftwareInventory) {
             $zdForCrossRef = Get-ZeroDayMatches -Config $config.ZeroDay
             $vulnerableSoftware = @(Find-VulnerableInstalledSoftware -Inventory $softwareInventory -ZeroDayMatches $zdForCrossRef)
             if ($vulnerableSoftware.Count -gt 0) {
-                Write-Host "Software inventory: $($vulnerableSoftware.Count) zero-day exposure hit(s) found."
+                Write-DiscoveryLog "Software inventory: $($vulnerableSoftware.Count) zero-day exposure hit(s) found."
             }
         } catch {
-            Write-Verbose "Zero-day cross-reference failed: $_"
+            Write-DiscoveryLog "ERROR zero-day cross-reference: $_" -Level ERROR
         }
     }
 
@@ -182,8 +219,8 @@ $jsonPath = Join-Path $outDir 'asset-inventory.json'
 
 $priorAssets = @()
 if (-not $Fresh -and (Test-Path $jsonPath)) {
-    Write-Verbose "Merging with existing inventory at $jsonPath"
     $priorAssets = @(Get-Content -Raw -Path $jsonPath | ConvertFrom-Json)
+    Write-DiscoveryLog "Merging with existing inventory at $jsonPath ($($priorAssets.Count) prior asset(s))"
 }
 
 # Consolidate: prior scans first, then this run's results overwrite any matching host
@@ -249,7 +286,7 @@ try {
     }
     $snapshot | ConvertTo-Json -Depth 8 | Set-Content -Path $snapshotPath -Encoding UTF8
 } catch {
-    Write-Verbose "Dashboard snapshot update failed: $_"
+    Write-DiscoveryLog "ERROR dashboard snapshot update: $_" -Level ERROR
 }
 
 if ($JsonOutput) {

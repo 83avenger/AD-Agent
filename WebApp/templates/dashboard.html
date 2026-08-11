@@ -455,7 +455,11 @@ async function openDeviceModal(name){
     const swRows = sw.length ? sw.map(s=>`
       <tr><td>${esc(s.Name||'')}</td><td>${esc(s.Version||'')}</td><td>${esc(s.Publisher||'')}</td>
         <td>${esc(s.Architecture||'')}</td></tr>`).join('')
-      : '<tr><td colspan="4" class="empty">No software collected for this device yet (needs WinRM reachability)</td></tr>';
+      : '<tr><td colspan="4" class="empty">No software collected for this device yet</td></tr>';
+    const note = a.CollectionNote
+      ? `<div class="alert-note" style="background:rgba(234,179,8,.1);border:1px solid var(--medium);color:var(--medium);
+          border-radius:8px;padding:.6rem .8rem;font-size:.8rem;margin-bottom:.9rem;">⚠ ${esc(a.CollectionNote)}</div>`
+      : '';
     body.innerHTML = `
       <div class="modal-meta">
         <div><div class="k">IP</div><div class="v">${esc(a.IP||'—')}</div></div>
@@ -463,6 +467,7 @@ async function openDeviceModal(name){
         <div><div class="k">Source</div><div class="v">${esc(a.Source||'—')}</div></div>
         <div><div class="k">Status</div><div class="v">${onlineBadge(a.LastSeen)}</div></div>
       </div>
+      ${note}
       <div class="ph">Installed software (${sw.length})</div>
       <table class="mini"><thead><tr><th>Name</th><th>Version</th><th>Publisher</th><th>Arch</th></tr></thead>
         <tbody>${swRows}</tbody></table>`;
