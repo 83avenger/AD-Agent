@@ -100,8 +100,10 @@
             DiscoverFromAD = $true   # uses Get-ADDomainController -Filter *
         }
         MemberServer = @{
-            Hosts         = @('app01.contoso.com','sql01.contoso.com')
-            DiscoverFromAD = $false  # set $true to auto-enumerate server OS computers from AD
+            # Empty until you add real hostnames here, or set DiscoverFromAD = $true below
+            # to auto-enumerate server OS computers from AD instead of maintaining a list.
+            Hosts         = @()
+            DiscoverFromAD = $false
         }
         Workstation = @{
             Hosts         = @()
