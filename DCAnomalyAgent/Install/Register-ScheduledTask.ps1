@@ -25,10 +25,14 @@
 [CmdletBinding()]
 param(
     [string]$GmsaAccount = 'CONTOSO\svc-discoverAgt$',
-    [string]$ScriptPath = (Resolve-Path "$PSScriptRoot\..\Run-AnomalyScan.ps1").Path,
+    # Left unset by default and resolved below (not here) - $PSScriptRoot is not reliably
+    # populated while param() default values are evaluated in Windows PowerShell 5.1.
+    [string]$ScriptPath,
     [string]$TaskName = 'DCAnomalyAgent-Scan',
     [string[]]$TriggerTimes = @('06:00', '14:00', '22:00')
 )
+
+if (-not $ScriptPath) { $ScriptPath = (Resolve-Path "$PSScriptRoot\..\Run-AnomalyScan.ps1").Path }
 
 $action = New-ScheduledTaskAction -Execute 'powershell.exe' `
     -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`""

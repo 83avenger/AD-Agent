@@ -30,7 +30,10 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$ConfigPath = "$PSScriptRoot\Config\settings.psd1",
+    # Left unset by default and resolved below (not here) - $PSScriptRoot is not reliably
+    # populated while param() default values are evaluated in Windows PowerShell 5.1,
+    # which silently produced a garbage path like "C:\Config\settings.psd1".
+    [string]$ConfigPath,
     [switch]$DryRun,
     [switch]$ComplianceScan,
     [switch]$ZeroDayScan,
@@ -53,6 +56,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+if (-not $ConfigPath) { $ConfigPath = Join-Path $PSScriptRoot 'Config\settings.psd1' }
 
 function Import-AgentConfig {
     # Loads settings.psd1. Unlike Import-PowerShellDataFile (which evaluates in a

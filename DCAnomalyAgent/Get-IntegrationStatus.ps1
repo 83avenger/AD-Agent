@@ -10,11 +10,14 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$ConfigPath = "$PSScriptRoot\Config\settings.psd1",
+    # Left unset by default and resolved below (not here) - $PSScriptRoot is not reliably
+    # populated while param() default values are evaluated in Windows PowerShell 5.1.
+    [string]$ConfigPath,
     [switch]$JsonOutput
 )
 
 $ErrorActionPreference = 'Stop'
+if (-not $ConfigPath) { $ConfigPath = Join-Path $PSScriptRoot 'Config\settings.psd1' }
 Import-Module "$PSScriptRoot\Modules\DCAnomalyAgent.VendorWarranty.psm1" -Force
 
 function Import-AgentConfig {
