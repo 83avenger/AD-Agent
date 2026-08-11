@@ -32,6 +32,7 @@ from report_generator import (
 
 APP_ROOT      = Path(__file__).parent
 PS_SCRIPT     = APP_ROOT.parent / "DCAnomalyAgent" / "Run-AnomalyScan.ps1"
+DISCOVERY_SCRIPT = APP_ROOT.parent / "DCAnomalyAgent" / "Run-Discovery.ps1"
 STATE_DIR     = APP_ROOT.parent / "DCAnomalyAgent" / "State"
 SNAPSHOT_PATH = STATE_DIR / "latest-scan.json"
 DISCOVERY_INVENTORY_PATH = STATE_DIR / "asset-inventory.json"
@@ -54,7 +55,7 @@ def _detect_powershell() -> str:
         try:
             subprocess.run([candidate, "-Version"], capture_output=True, timeout=5)
             return candidate
-        except FileNotFoundError:
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
             continue
     return None
 
@@ -88,6 +89,8 @@ def _run_scan(
         cmd.append("-CertificateScan")
     if "software" in scan_types:
         cmd.append("-SoftwareInventoryScan")
+    if "anomaly" not in scan_types:
+        cmd.append("-SkipAnomalyScan")
     if frameworks:
         cmd += ["-FrameworkFilter"] + frameworks
     if severities:
@@ -118,6 +121,54 @@ def _run_scan(
         return None, "Scan timed out (>5 minutes)."
     except json.JSONDecodeError as exc:
         return None, f"Failed to parse scanner output as JSON: {exc}\n\nRaw output:\n{raw[:2000]}"
+    except Exception as exc:
+        return None, str(exc)
+
+
+def _run_discovery(
+    from_ad: bool,
+    cidr: list[str],
+    cloudflare_warp_cidr: list[str],
+    skip_categorize: bool,
+    skip_software: bool,
+) -> tuple[dict | None, str]:
+    """
+    Invoke Run-Discovery.ps1 directly — asset discovery + (by default) its folded-in
+    software inventory, with no anomaly/compliance/certificate scanning at all. Targets
+    are whatever AD/network scanning actually finds, not the static Assets.* host lists
+    Run-AnomalyScan.ps1 uses (which is what silently fails on stale placeholder hosts).
+    Returns (parsed_result, error_message); (None, error) on failure.
+    """
+    pwsh = _detect_powershell()
+    if not pwsh:
+        return None, "PowerShell (pwsh/powershell) not found on PATH."
+
+    cmd = [pwsh, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(DISCOVERY_SCRIPT), "-JsonOutput"]
+    if from_ad:
+        cmd.append("-FromAD")
+    if cidr:
+        cmd += ["-Cidr"] + cidr
+    if cloudflare_warp_cidr:
+        cmd += ["-CloudflareWarpCidr"] + cloudflare_warp_cidr
+    if skip_categorize:
+        cmd.append("-SkipCategorize")
+    if skip_software:
+        cmd.append("-SkipSoftwareInventory")
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        raw = result.stdout.strip()
+        if not raw:
+            return None, result.stderr.strip() or "Discovery produced no output."
+        json_start = raw.find("{")
+        json_end = raw.rfind("}") + 1
+        if json_start == -1:
+            return None, f"No JSON in output.\n\nStdout:\n{raw}\n\nStderr:\n{result.stderr}"
+        return json.loads(raw[json_start:json_end]), ""
+    except subprocess.TimeoutExpired:
+        return None, "Discovery timed out (>10 minutes) — try a smaller CIDR range or -SkipSoftwareInventory."
+    except json.JSONDecodeError as exc:
+        return None, f"Failed to parse discovery output as JSON: {exc}\n\nRaw output:\n{raw[:2000]}"
     except Exception as exc:
         return None, str(exc)
 
@@ -562,6 +613,43 @@ def vendor_warranty_settings():
         enabled=secrets["Enabled"],
         age_alert_years=secrets["AgeAlertYears"],
         saved_msg=saved_msg,
+    )
+
+
+@app.route("/discovery/run", methods=["POST"])
+def discovery_run():
+    """Discovery-only run (+ software inventory by default): no anomaly, compliance,
+    certificate, or zero-day scanning at all."""
+
+    def _split(field: str) -> list[str]:
+        raw = request.form.get(field, "").strip()
+        return [x.strip() for x in raw.replace("\n", ",").split(",") if x.strip()]
+
+    from_ad = "from_ad" in request.form
+    cidr = _split("cidr")
+    warp_cidr = _split("cloudflare_warp_cidr")
+    skip_categorize = "skip_categorize" in request.form
+    skip_software = "skip_software" in request.form
+
+    if not from_ad and not cidr and not warp_cidr:
+        return render_template("index.html", error="Discovery needs at least one target: check "
+                                "“From Active Directory” or enter a CIDR range.")
+
+    result, err = _run_discovery(from_ad, cidr, warp_cidr, skip_categorize, skip_software)
+    if err:
+        return render_template("index.html", error=f"Discovery failed: {err}")
+
+    by_type: dict = {}
+    for a in (result.get("Inventory") or []):
+        t = a.get("AssetType", "Unknown")
+        by_type[t] = by_type.get(t, 0) + 1
+
+    return render_template(
+        "index.html",
+        discovery_summary={
+            "count": result.get("Count", 0),
+            "by_type": sorted(by_type.items(), key=lambda kv: -kv[1]),
+        },
     )
 
 

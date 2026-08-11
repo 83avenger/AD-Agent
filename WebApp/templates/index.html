@@ -124,6 +124,82 @@
 
 </form>
 
+<hr style="border:none; border-top:1px solid var(--border); margin:2rem 0;">
+
+<div style="margin: .5rem 0 1rem;">
+  <h2 style="font-size:1.2rem; font-weight:800; color:var(--brand-dark);">Discovery Only</h2>
+  <p style="color:var(--muted); font-size:.9rem; margin-top:.3rem;">
+    Runs asset discovery and (by default) its per-device software inventory —
+    <strong>no anomaly, compliance, certificate, or zero-day scanning</strong>. Targets are
+    whatever AD/network scanning actually finds, not a fixed host list, so this is the
+    quickest way to get real software data without editing <code>settings.psd1</code> first.
+  </p>
+</div>
+
+{% if discovery_summary %}
+<div class="alert alert-info">
+  ✓ Discovery complete — {{ discovery_summary.count }} asset(s) in the consolidated inventory.
+  {% for t, c in discovery_summary.by_type %}<span class="badge badge-low" style="margin-left:.3rem;">{{ t }}: {{ c }}</span>{% endfor %}
+  &nbsp; <a href="/dashboard" style="color:var(--accent); font-weight:600;">View on the Discovery dashboard →</a>
+</div>
+{% endif %}
+
+<form method="POST" action="/discovery/run" id="discoveryForm">
+  <div class="card">
+    <div class="card-header">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+      </svg>
+      Discovery Targets
+    </div>
+
+    <div class="checkbox-group" style="margin-bottom:1rem;">
+      <div class="checkbox-chip">
+        <input type="checkbox" id="from_ad" name="from_ad" checked>
+        <label for="from_ad">From Active Directory</label>
+      </div>
+    </div>
+
+    <div class="form-grid">
+      <div>
+        <label for="cidr">Network CIDR ranges <span style="color:var(--muted); font-weight:400;">(optional)</span></label>
+        <textarea id="cidr" name="cidr" rows="3" placeholder="10.0.0.0/24, 10.0.1.0/25&#10;(one per line, or comma-separated)"></textarea>
+      </div>
+      <div>
+        <label for="cloudflare_warp_cidr">Cloudflare WARP range <span style="color:var(--muted); font-weight:400;">(optional)</span></label>
+        <textarea id="cloudflare_warp_cidr" name="cloudflare_warp_cidr" rows="3" placeholder="100.96.0.0/12"></textarea>
+      </div>
+    </div>
+
+    <div class="checkbox-group" style="margin-top:1rem;">
+      <div class="checkbox-chip">
+        <input type="checkbox" id="skip_categorize" name="skip_categorize">
+        <label for="skip_categorize">Skip Desktop/Laptop/Server categorization (faster first pass)</label>
+      </div>
+      <div class="checkbox-chip">
+        <input type="checkbox" id="skip_software" name="skip_software">
+        <label for="skip_software">Skip software inventory collection</label>
+      </div>
+    </div>
+    <p style="font-size:.78rem; color:var(--muted); margin-top:.5rem;">
+      Leaving both boxes above unchecked (the default) collects installed software from every
+      reachable Windows host found — this is the slower, more thorough option.
+    </p>
+  </div>
+
+  <div style="display:flex; gap:.8rem; align-items:center;">
+    <button type="submit" class="btn btn-dark" id="discoverBtn">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+        <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+      </svg>
+      Run Discovery
+    </button>
+    <span id="discoveringMsg" style="display:none; font-size:.875rem; color:var(--muted);">
+      ⏳ Discovering — this can take several minutes for larger ranges…
+    </span>
+  </div>
+</form>
+
 {% endblock %}
 
 {% block scripts %}
@@ -132,6 +208,11 @@ document.getElementById('scanForm').addEventListener('submit', function() {
   document.getElementById('submitBtn').disabled = true;
   document.getElementById('submitBtn').textContent = 'Scanning…';
   document.getElementById('scanningMsg').style.display = 'inline';
+});
+document.getElementById('discoveryForm').addEventListener('submit', function() {
+  document.getElementById('discoverBtn').disabled = true;
+  document.getElementById('discoverBtn').textContent = 'Discovering…';
+  document.getElementById('discoveringMsg').style.display = 'inline';
 });
 </script>
 {% endblock %}
