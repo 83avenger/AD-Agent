@@ -233,9 +233,11 @@
         # device age can be reported without needing a separate CMDB.
         VendorWarranty = @{
             Enabled = $false
-            Dell    = @{ ApiKey = ''; ApiSecret = '' }   # Dell TechDirect API
-            Hp      = @{ ApiKey = '' }                    # HP Warranty API
-            Lenovo  = @{ ApiKey = '' }                     # Lenovo Warranty API
+            # API keys (Dell TechDirect / HP Warranty / Lenovo Support) are entered and
+            # saved separately, from the web UI's Integrations > Vendor Warranty page -
+            # they're written to Config/integration-secrets.json (gitignored) instead of
+            # here, so real secrets never end up committed to source control. See
+            # Modules/DCAnomalyAgent.VendorWarranty.psm1 -> Get-VendorWarrantySecrets.
             AgeAlertYears = 4   # flag devices at/above this age once populated
         }
 

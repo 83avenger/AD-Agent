@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}Vendor Warranty API Keys — DC Anomaly Agent{% endblock %}
+
+{% block content %}
+
+<div style="margin: 1.5rem 0 .5rem;">
+  <h1 style="font-size:1.6rem; font-weight:800; color:var(--brand-dark);">Vendor Warranty API Keys</h1>
+  <p style="color:var(--muted); font-size:.9rem; margin-top:.3rem;">
+    Save keys here as soon as each vendor hands them over — nothing needs to work yet.
+    Once a key is saved and this section is enabled, device-age lookups (BIOS serial →
+    ship date) will use it automatically on the next scan.
+    <a href="/integrations" style="color:var(--accent);">← Back to Integrations</a>
+  </p>
+</div>
+
+{% if saved_msg %}
+<div class="alert alert-info">✓ {{ saved_msg }}</div>
+{% endif %}
+
+<div class="alert alert-demo">
+  Keys are stored in <code>DCAnomalyAgent/Config/integration-secrets.json</code> on this
+  server (not in settings.psd1, not committed to git). This page never displays a saved
+  key's value back to you — fields show <em>"•••• saved"</em> once set. Leaving a field
+  blank on save keeps whatever is already stored; it does not clear it.
+</div>
+
+<form method="POST" action="/integrations/vendor-warranty">
+
+  <div class="card">
+    <div class="card-header">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/>
+      </svg>
+      Enable / Alert Threshold
+    </div>
+    <div class="checkbox-group" style="margin-bottom:1rem;">
+      <div class="checkbox-chip">
+        <input type="checkbox" id="enabled" name="enabled" {{ 'checked' if enabled else '' }}>
+        <label for="enabled">Enable device-age lookups</label>
+      </div>
+    </div>
+    <label for="age_alert_years">Flag devices at or above this age (years)</label>
+    <input type="text" id="age_alert_years" name="age_alert_years" value="{{ age_alert_years }}" style="max-width:120px;">
+  </div>
+
+  <div class="card">
+    <div class="card-header">Dell — TechDirect API</div>
+    <div class="form-grid">
+      <div>
+        <label for="dell_api_key">API Key {% if masked.dell_api_key %}<span class="badge badge-low">•••• saved</span>{% endif %}</label>
+        <input type="text" id="dell_api_key" name="dell_api_key" placeholder="{{ '(unchanged — leave blank to keep)' if masked.dell_api_key else 'not set' }}" autocomplete="off">
+      </div>
+      <div>
+        <label for="dell_api_secret">API Secret {% if masked.dell_api_secret %}<span class="badge badge-low">•••• saved</span>{% endif %}</label>
+        <input type="text" id="dell_api_secret" name="dell_api_secret" placeholder="{{ '(unchanged — leave blank to keep)' if masked.dell_api_secret else 'not set' }}" autocomplete="off">
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">HP — Warranty API</div>
+    <label for="hp_api_key">API Key {% if masked.hp_api_key %}<span class="badge badge-low">•••• saved</span>{% endif %}</label>
+    <input type="text" id="hp_api_key" name="hp_api_key" placeholder="{{ '(unchanged — leave blank to keep)' if masked.hp_api_key else 'not set' }}" autocomplete="off">
+  </div>
+
+  <div class="card">
+    <div class="card-header">Lenovo — Support API</div>
+    <label for="lenovo_api_key">API Key (ClientID) {% if masked.lenovo_api_key %}<span class="badge badge-low">•••• saved</span>{% endif %}</label>
+    <input type="text" id="lenovo_api_key" name="lenovo_api_key" placeholder="{{ '(unchanged — leave blank to keep)' if masked.lenovo_api_key else 'not set' }}" autocomplete="off">
+  </div>
+
+  <button type="submit" class="btn btn-primary">Save</button>
+</form>
+
+<p style="font-size:.78rem; color:var(--muted); margin-top:1rem;">
+  Don't have keys yet? See the <a href="/integrations" style="color:var(--accent);">Integrations page</a>
+  for the exact steps to register with each vendor.
+</p>
+
+{% endblock %}

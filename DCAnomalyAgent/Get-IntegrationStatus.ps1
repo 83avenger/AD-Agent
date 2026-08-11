@@ -15,6 +15,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+Import-Module "$PSScriptRoot\Modules\DCAnomalyAgent.VendorWarranty.psm1" -Force
 
 function Import-AgentConfig {
     param([Parameter(Mandatory)][string]$Path)
@@ -36,12 +37,19 @@ $snmpConfigured = if ($snmp.Version -eq 'v3') {
     Test-NonEmpty $snmp.Community
 }
 
+# Vendor warranty keys are saved from the web UI's "Vendor Warranty" page into
+# Config/integration-secrets.json, not settings.psd1 - see Get-VendorWarrantySecrets.
 $vw = $i.VendorWarranty
+$vwSecrets = Get-VendorWarrantySecrets
 $vwStatus = [ordered]@{
-    Dell   = (Test-NonEmpty $vw.Dell.ApiKey) -and (Test-NonEmpty $vw.Dell.ApiSecret)
-    Hp     = Test-NonEmpty $vw.Hp.ApiKey
-    Lenovo = Test-NonEmpty $vw.Lenovo.ApiKey
+    Dell   = (Test-NonEmpty $vwSecrets.Dell.ApiKey) -and (Test-NonEmpty $vwSecrets.Dell.ApiSecret)
+    Hp     = Test-NonEmpty $vwSecrets.Hp.ApiKey
+    Lenovo = Test-NonEmpty $vwSecrets.Lenovo.ApiKey
 }
+# The web UI's Vendor Warranty page saves Enabled/AgeAlertYears into the same secrets
+# file as the keys, for one simple write path - fall back to settings.psd1 until set there.
+$vwEnabled  = if ($null -ne $vwSecrets.Enabled) { [bool]$vwSecrets.Enabled } else { [bool]$vw.Enabled }
+$vwAgeYears = if ($vwSecrets.AgeAlertYears) { $vwSecrets.AgeAlertYears } else { $vw.AgeAlertYears }
 
 $mdm = $i.Mdm
 $mdmConfigured = switch ($mdm.Provider) {
@@ -62,10 +70,10 @@ $status = [ordered]@{
         Version     = $snmp.Version
     }
     VendorWarranty = [ordered]@{
-        Enabled     = [bool]$vw.Enabled
+        Enabled     = $vwEnabled
         Configured  = ($vwStatus.Values -contains $true)
         ByVendor    = $vwStatus
-        AgeAlertYears = $vw.AgeAlertYears
+        AgeAlertYears = $vwAgeYears
     }
     Mdm = [ordered]@{
         Enabled     = [bool]$mdm.Enabled

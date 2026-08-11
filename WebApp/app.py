@@ -37,6 +37,9 @@ SNAPSHOT_PATH = STATE_DIR / "latest-scan.json"
 DISCOVERY_INVENTORY_PATH = STATE_DIR / "asset-inventory.json"
 INTEGRATIONS_STATUS_PATH = STATE_DIR / "integrations-status.json"
 INTEGRATIONS_SCRIPT      = APP_ROOT.parent / "DCAnomalyAgent" / "Get-IntegrationStatus.ps1"
+# Vendor API keys entered on the Vendor Warranty page live here, not in settings.psd1 or
+# git - see DCAnomalyAgent/Modules/DCAnomalyAgent.VendorWarranty.psm1.
+INTEGRATION_SECRETS_PATH = APP_ROOT.parent / "DCAnomalyAgent" / "Config" / "integration-secrets.json"
 REPORTS_DIR   = APP_ROOT / "reports"
 REPORTS_DIR.mkdir(exist_ok=True)
 
@@ -232,6 +235,60 @@ def _load_integration_status() -> dict:
     except Exception:
         pass
     return default
+
+
+def _load_vendor_warranty_secrets() -> dict:
+    """Raw contents of integration-secrets.json's VendorWarranty block (never sent to the
+    browser as-is — the form only ever shows masked placeholders for saved keys)."""
+    default = {
+        "Dell": {"ApiKey": "", "ApiSecret": ""},
+        "Hp": {"ApiKey": ""},
+        "Lenovo": {"ApiKey": ""},
+        "Enabled": False,
+        "AgeAlertYears": 4,
+    }
+    try:
+        if INTEGRATION_SECRETS_PATH.exists():
+            with open(INTEGRATION_SECRETS_PATH, encoding="utf-8-sig") as fh:
+                data = json.load(fh)
+                saved = data.get("VendorWarranty", {})
+                default["Dell"].update(saved.get("Dell", {}))
+                default["Hp"].update(saved.get("Hp", {}))
+                default["Lenovo"].update(saved.get("Lenovo", {}))
+                if "Enabled" in saved:
+                    default["Enabled"] = saved["Enabled"]
+                if "AgeAlertYears" in saved:
+                    default["AgeAlertYears"] = saved["AgeAlertYears"]
+    except Exception:
+        pass
+    return default
+
+
+def _save_vendor_warranty_secrets(update: dict) -> None:
+    """Merge `update` into integration-secrets.json's VendorWarranty block, preserving any
+    other top-level sections the file may gain later and any field left blank in the form
+    (blank means "keep what's already saved", not "clear it")."""
+    data = {}
+    if INTEGRATION_SECRETS_PATH.exists():
+        try:
+            with open(INTEGRATION_SECRETS_PATH, encoding="utf-8-sig") as fh:
+                data = json.load(fh)
+        except Exception:
+            data = {}
+    current = data.get("VendorWarranty", {})
+    for section in ("Dell", "Hp", "Lenovo"):
+        if section in update:
+            merged = dict(current.get(section, {}))
+            merged.update({k: v for k, v in update[section].items() if v})  # blank = keep existing
+            current[section] = merged
+    if "Enabled" in update:
+        current["Enabled"] = update["Enabled"]
+    if "AgeAlertYears" in update:
+        current["AgeAlertYears"] = update["AgeAlertYears"]
+    data["VendorWarranty"] = current
+    INTEGRATION_SECRETS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(INTEGRATION_SECRETS_PATH, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, indent=2)
 
 
 def _load_discovery_inventory() -> tuple[list, str | None]:
@@ -467,6 +524,45 @@ def integrations_refresh():
     else:
         error = "PowerShell (pwsh/powershell) not found on PATH."
     return render_template("integrations.html", status=_load_integration_status(), error=error)
+
+
+@app.route("/integrations/vendor-warranty", methods=["GET", "POST"])
+def vendor_warranty_settings():
+    """Enter/save Dell/HP/Lenovo warranty API keys for later use, once each team hands
+    them over — keys are written to integration-secrets.json (gitignored), never to
+    settings.psd1 or the page itself (saved keys show as masked, not in plaintext)."""
+    saved_msg = None
+    if request.method == "POST":
+        update = {
+            "Dell": {
+                "ApiKey": request.form.get("dell_api_key", "").strip(),
+                "ApiSecret": request.form.get("dell_api_secret", "").strip(),
+            },
+            "Hp": {"ApiKey": request.form.get("hp_api_key", "").strip()},
+            "Lenovo": {"ApiKey": request.form.get("lenovo_api_key", "").strip()},
+            "Enabled": "enabled" in request.form,
+        }
+        try:
+            update["AgeAlertYears"] = int(request.form.get("age_alert_years", "4"))
+        except ValueError:
+            update["AgeAlertYears"] = 4
+        _save_vendor_warranty_secrets(update)
+        saved_msg = "Saved. Keys left blank above were kept as previously saved (not cleared)."
+
+    secrets = _load_vendor_warranty_secrets()
+    masked = {
+        "dell_api_key": bool(secrets["Dell"].get("ApiKey")),
+        "dell_api_secret": bool(secrets["Dell"].get("ApiSecret")),
+        "hp_api_key": bool(secrets["Hp"].get("ApiKey")),
+        "lenovo_api_key": bool(secrets["Lenovo"].get("ApiKey")),
+    }
+    return render_template(
+        "vendor_warranty.html",
+        masked=masked,
+        enabled=secrets["Enabled"],
+        age_alert_years=secrets["AgeAlertYears"],
+        saved_msg=saved_msg,
+    )
 
 
 @app.route("/scan", methods=["POST"])
