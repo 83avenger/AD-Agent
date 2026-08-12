@@ -403,8 +403,10 @@ Creates these Scheduled Tasks under the gMSA:
 | `DCAnomalyAgent-Scan-ZeroDay` | Daily 08:00 | Zero-day feed pull (`-SkipAnomalyScan`) |
 | `DCAnomalyAgent-Scan-Certificates` | Daily 09:00 | Certificate expiry scan (`-SkipAnomalyScan`) |
 | `DCAnomalyAgent-Scan-SoftwareInventory` | Daily 10:00 | Installed-software inventory + zero-day cross-reference (`-SkipAnomalyScan`) |
+| `DCAnomalyAgent-Scan-Discovery` | 02:00, 06:00, 10:00, 14:00, 18:00, 22:00 | Lightweight presence sweep (`-SkipSoftwareInventory`) — keeps Online/Last Seen status current on the Assets/Discovery pages without a WinRM software pull on every host |
+| `DCAnomalyAgent-Scan-Discovery-Full` | Daily 05:00 | Full discovery pass: asset inventory, device categorization, and per-device software collection |
 
-> The compliance, zero-day, certificate, and software-inventory tasks pass **`-SkipAnomalyScan`** so they don't each re-run and re-report the event-log anomaly scan that the dedicated anomaly task already covers 3×/day. Each still contributes its section to the dashboard snapshot.
+> The compliance, zero-day, certificate, and software-inventory tasks pass **`-SkipAnomalyScan`** so they don't each re-run and re-report the event-log anomaly scan that the dedicated anomaly task already covers 3×/day. Each still contributes its section to the dashboard snapshot. The discovery presence task uses a 3-hour execution limit rather than 1 hour, since `-FromAD` can enumerate thousands of computer objects in a large domain.
 
 ---
 

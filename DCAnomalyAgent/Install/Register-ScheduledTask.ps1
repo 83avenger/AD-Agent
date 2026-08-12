@@ -22,17 +22,24 @@
       5. Update DCAnomalyAgent/Config/settings.psd1 with the webhook URL, tenant/app/site/list IDs,
          and certificate thumbprint.
 #>
-[CmdletBinding()]
+[CmdletBinding(PositionalBinding = $false)]
 param(
     [string]$GmsaAccount = 'CONTOSO\svc-discoverAgt$',
     # Left unset by default and resolved below (not here) - $PSScriptRoot is not reliably
     # populated while param() default values are evaluated in Windows PowerShell 5.1.
     [string]$ScriptPath,
+    [string]$DiscoveryScriptPath,
     [string]$TaskName = 'DCAnomalyAgent-Scan',
-    [string[]]$TriggerTimes = @('06:00', '14:00', '22:00')
+    [string[]]$TriggerTimes = @('06:00', '14:00', '22:00'),
+    # Lightweight presence sweep (refreshes online/LastSeen status only, skips the slower
+    # per-host software collection) - keeps the Assets/Discovery pages current throughout
+    # the day without hammering every host with WinRM software-inventory calls that often.
+    [string[]]$DiscoveryPresenceTimes = @('02:00', '06:00', '10:00', '14:00', '18:00', '22:00'),
+    [string]$DiscoveryFullTime = '05:00'
 )
 
 if (-not $ScriptPath) { $ScriptPath = (Resolve-Path "$PSScriptRoot\..\Run-AnomalyScan.ps1").Path }
+if (-not $DiscoveryScriptPath) { $DiscoveryScriptPath = (Resolve-Path "$PSScriptRoot\..\Run-Discovery.ps1").Path }
 
 $action = New-ScheduledTaskAction -Execute 'powershell.exe' `
     -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`""
@@ -44,6 +51,10 @@ $triggers = $TriggerTimes | ForEach-Object {
 $principal = New-ScheduledTaskPrincipal -UserId $GmsaAccount -LogonType Password -RunLevel Highest
 
 $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 1)
+# Discovery with -FromAD can enumerate thousands of computer objects (seen 4000+ in
+# real deployments) and attempts a WinRM probe against each eligible one - a 1-hour cap
+# risks the task getting killed mid-run. Longer ceiling, same "don't skip if missed" behavior.
+$discoverySettings = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 3)
 
 Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $triggers `
     -Principal $principal -Settings $settings -Description 'Runs DC Anomaly Agent scan under gMSA identity'
@@ -97,3 +108,33 @@ Register-ScheduledTask -TaskName "$TaskName-SoftwareInventory" -Action $software
     -Description 'Enumerates installed software on Windows assets, categorizes by device type, and cross-references against the zero-day watchlist'
 
 Write-Host "Software inventory task '$TaskName-SoftwareInventory' registered to run daily at 10:00 under $GmsaAccount"
+
+# -- Discovery presence sweep (runs several times daily, no software collection) ----
+# Keeps AssetType/OpenPorts/LastSeen (online status, staleness) current on the
+# Assets/Discovery pages. Uses whatever FromAD/Cidr/CloudflareWarpCidr is configured in
+# settings.psd1's Discovery block (no switches passed = config-driven, same as running
+# Run-Discovery.ps1 with no arguments).
+$discoveryPresenceAction = New-ScheduledTaskAction -Execute 'powershell.exe' `
+    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$DiscoveryScriptPath`" -SkipSoftwareInventory"
+
+$discoveryPresenceTriggers = $DiscoveryPresenceTimes | ForEach-Object {
+    New-ScheduledTaskTrigger -Daily -At ([datetime]::Parse($_))
+}
+
+Register-ScheduledTask -TaskName "$TaskName-Discovery" -Action $discoveryPresenceAction `
+    -Trigger $discoveryPresenceTriggers -Principal $principal -Settings $discoverySettings `
+    -Description 'Refreshes asset online/LastSeen status via AD + network discovery (no software collection - see -Discovery-Full for that)'
+
+Write-Host "Discovery presence task '$TaskName-Discovery' registered to run at: $($DiscoveryPresenceTimes -join ', ') under $GmsaAccount"
+
+# -- Discovery full pass (runs once daily, includes software inventory) ------------
+$discoveryFullAction = New-ScheduledTaskAction -Execute 'powershell.exe' `
+    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$DiscoveryScriptPath`""
+
+$discoveryFullTrigger = New-ScheduledTaskTrigger -Daily -At ([datetime]::Parse($DiscoveryFullTime))
+
+Register-ScheduledTask -TaskName "$TaskName-Discovery-Full" -Action $discoveryFullAction `
+    -Trigger $discoveryFullTrigger -Principal $principal -Settings $discoverySettings `
+    -Description 'Full discovery pass: asset inventory, device categorization, and per-device software collection'
+
+Write-Host "Discovery full-pass task '$TaskName-Discovery-Full' registered to run daily at $DiscoveryFullTime under $GmsaAccount"
