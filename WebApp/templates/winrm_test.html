@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}WinRM Test — DC Anomaly Agent{% endblock %}
+
+{% block content %}
+
+<div style="margin: 1.5rem 0 .5rem;">
+  <h1 style="font-size:1.6rem; font-weight:800; color:var(--brand-dark);">WinRM Test</h1>
+  <p style="color:var(--muted); font-size:.9rem; margin-top:.3rem;">
+    Runs the same checks used to hand-diagnose WinRM issues — TCP 5985/5986, a WSMan
+    handshake, and a real <code>Invoke-Command</code> — against one or more hosts, or every
+    Windows host Discovery has found so far. Useful whenever software/compliance data is
+    missing for a device and you need to know exactly which step is failing.
+  </p>
+</div>
+
+{% if error %}
+<div class="alert alert-error">⚠ {{ error }}</div>
+{% endif %}
+
+<form method="POST" action="/winrm-test" id="winrmForm">
+  <div class="card">
+    <div class="card-header">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M5 12h14M12 5l7 7-7 7"/>
+      </svg>
+      Hosts to test
+    </div>
+    <label for="hosts">Hostnames <span style="color:var(--muted); font-weight:400;">(optional — leave blank to test every Windows host in the Discovery inventory)</span></label>
+    <textarea id="hosts" name="hosts" rows="3" placeholder="Jump-Jeremy.amg.local, dc1.amg.local&#10;(one per line, or comma-separated)">{{ hosts_input }}</textarea>
+  </div>
+
+  <div style="display:flex; gap:.8rem; align-items:center;">
+    <button type="submit" class="btn btn-dark" id="testBtn">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+        <path d="M5 12h14M12 5l7 7-7 7"/>
+      </svg>
+      Run Test
+    </button>
+    <span id="testingMsg" style="display:none; font-size:.875rem; color:var(--muted);">
+      ⏳ Testing — this can take a while for many hosts…
+    </span>
+  </div>
+</form>
+
+{% if results is not none %}
+<div class="card" style="margin-top:1.5rem;">
+  <div class="card-header">Results ({{ results|length }} host(s))</div>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>Host</th><th>TCP 5985</th><th>TCP 5986</th><th>WSMan</th><th>Invoke-Command</th><th>Status</th></tr></thead>
+      <tbody>
+        {% for r in results %}
+        <tr>
+          <td>{{ r.ComputerName }}</td>
+          <td>{% if r.Tcp5985 %}<span class="badge badge-low">Open</span>{% else %}<span class="badge" style="background:var(--border);color:var(--muted)">Closed</span>{% endif %}</td>
+          <td>{% if r.Tcp5986 %}<span class="badge badge-low">Open</span>{% else %}<span class="badge" style="background:var(--border);color:var(--muted)">Closed</span>{% endif %}</td>
+          <td>{% if r.WsManOk %}<span class="badge badge-low">OK</span>{% else %}<span class="badge badge-high">Fail</span>{% endif %}</td>
+          <td>{% if r.InvokeOk %}<span class="badge badge-low">OK{% if r.InvokeIdentity %} ({{ r.InvokeIdentity }}){% endif %}</span>{% else %}<span class="badge badge-high">Fail</span>{% endif %}</td>
+          <td style="font-size:.82rem;">{{ r.OverallStatus }}</td>
+        </tr>
+        {% if r.WsManError or r.InvokeError %}
+        <tr><td></td><td colspan="5" style="font-size:.78rem; color:var(--critical); background:#fef2f2;">
+          {% if r.WsManError %}<div><strong>WSMan error:</strong> {{ r.WsManError }}</div>{% endif %}
+          {% if r.InvokeError %}<div><strong>Invoke-Command error:</strong> {{ r.InvokeError }}</div>{% endif %}
+        </td></tr>
+        {% endif %}
+        {% else %}
+        <tr><td colspan="6" style="text-align:center; color:var(--muted);">No results.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.getElementById('winrmForm').addEventListener('submit', function() {
+  document.getElementById('testBtn').disabled = true;
+  document.getElementById('testBtn').textContent = 'Testing…';
+  document.getElementById('testingMsg').style.display = 'inline';
+});
+</script>
+{% endblock %}

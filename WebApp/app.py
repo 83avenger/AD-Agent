@@ -38,6 +38,7 @@ SNAPSHOT_PATH = STATE_DIR / "latest-scan.json"
 DISCOVERY_INVENTORY_PATH = STATE_DIR / "asset-inventory.json"
 INTEGRATIONS_STATUS_PATH = STATE_DIR / "integrations-status.json"
 INTEGRATIONS_SCRIPT      = APP_ROOT.parent / "DCAnomalyAgent" / "Get-IntegrationStatus.ps1"
+WINRM_TEST_SCRIPT        = APP_ROOT.parent / "DCAnomalyAgent" / "Test-WinRM.ps1"
 # Vendor API keys entered on the Vendor Warranty page live here, not in settings.psd1 or
 # git - see DCAnomalyAgent/Modules/DCAnomalyAgent.VendorWarranty.psm1.
 INTEGRATION_SECRETS_PATH = APP_ROOT.parent / "DCAnomalyAgent" / "Config" / "integration-secrets.json"
@@ -614,6 +615,48 @@ def vendor_warranty_settings():
         age_alert_years=secrets["AgeAlertYears"],
         saved_msg=saved_msg,
     )
+
+
+@app.route("/winrm-test", methods=["GET", "POST"])
+def winrm_test():
+    """Run the same TCP/WSMan/Invoke-Command checks used to hand-diagnose WinRM issues
+    (why a device has no software collected, etc.) from the browser instead of RDP+CLI."""
+    results = None
+    error = None
+    hosts_input = ""
+
+    if request.method == "POST":
+        hosts_input = request.form.get("hosts", "").strip()
+        hosts = [h.strip() for h in hosts_input.replace("\n", ",").split(",") if h.strip()]
+
+        pwsh = _detect_powershell()
+        if not pwsh:
+            error = "PowerShell (pwsh/powershell) not found on PATH."
+        else:
+            cmd = [pwsh, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(WINRM_TEST_SCRIPT), "-JsonOutput"]
+            if hosts:
+                cmd += ["-ComputerName"] + hosts
+            try:
+                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+                raw = proc.stdout.strip()
+                if not raw:
+                    error = proc.stderr.strip() or "No output from Test-WinRM.ps1."
+                else:
+                    json_start = raw.find("{") if raw.lstrip().startswith("{") else raw.find("[")
+                    json_end = raw.rfind("}") + 1 if raw.lstrip().startswith("{") else raw.rfind("]") + 1
+                    if json_start == -1:
+                        error = f"No JSON in output.\n\nStdout:\n{raw}\n\nStderr:\n{proc.stderr}"
+                    else:
+                        parsed = json.loads(raw[json_start:json_end])
+                        results = parsed if isinstance(parsed, list) else [parsed]
+            except subprocess.TimeoutExpired:
+                error = "WinRM test timed out (>2 minutes) — try fewer hosts at once."
+            except json.JSONDecodeError as exc:
+                error = f"Failed to parse output as JSON: {exc}\n\nRaw output:\n{raw[:2000]}"
+            except Exception as exc:
+                error = str(exc)
+
+    return render_template("winrm_test.html", results=results, error=error, hosts_input=hosts_input)
 
 
 @app.route("/assets")
