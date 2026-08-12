@@ -68,7 +68,7 @@
       font-size:.875rem; margin-bottom:1rem;" onkeyup="filterAssets()">
   <div class="tbl-wrap">
     <table id="assetTable">
-      <thead><tr><th>Name</th><th>IP</th><th>Type</th><th>OS</th><th>Source</th><th>Status</th><th>Last Seen</th></tr></thead>
+      <thead><tr><th>Name</th><th>IP</th><th>Type</th><th>OS</th><th>Source</th><th>Status</th><th>Last Seen</th><th></th></tr></thead>
       <tbody>
         {% for a in assets %}
         <tr>
@@ -89,9 +89,16 @@
           <td style="{{ 'color:var(--high); font-weight:600;' if is_stale(a.LastSeen) else 'color:var(--muted);' }}">
             {{ time_ago(a.LastSeen) }}
           </td>
+          <td>
+            <form method="POST" action="/assets/delete" style="margin:0;"
+              onsubmit="return confirm('Remove {{ a.Name }} from the asset inventory? It will reappear if a future Discovery scan finds it again.');">
+              <input type="hidden" name="dedup_key" value="{{ a.DedupKey }}">
+              <button type="submit" class="btn btn-outline btn-sm" style="color:var(--critical); border-color:var(--critical); padding:.25rem .6rem;" title="Delete">✕</button>
+            </form>
+          </td>
         </tr>
         {% else %}
-        <tr><td colspan="7" style="text-align:center; color:var(--muted);">No assets discovered yet.</td></tr>
+        <tr><td colspan="8" style="text-align:center; color:var(--muted);">No assets discovered yet.</td></tr>
         {% endfor %}
       </tbody>
     </table>

@@ -18,6 +18,7 @@ from flask import (
     Flask,
     Response,
     jsonify,
+    redirect,
     render_template,
     request,
     session,
@@ -453,7 +454,7 @@ def _row_to_asset(row: sqlite3.Row) -> dict:
     d = {
         "Name": row["name"], "IP": row["ip"], "AssetType": row["asset_type"],
         "OS": row["os"], "OpenPorts": row["open_ports"], "Source": row["source"],
-        "LastSeen": row["last_seen"],
+        "LastSeen": row["last_seen"], "DedupKey": row["dedup_key"],
     }
     if row["collection_note"]:
         d["CollectionNote"] = row["collection_note"]
@@ -465,19 +466,31 @@ def _row_to_asset(row: sqlite3.Row) -> dict:
     return d
 
 
+_last_synced_mtime: float | None = None  # module-level: avoids re-syncing an unchanged
+# snapshot on every page view. Matters for manual deletes (below): if a deleted asset is
+# still present in the CURRENT snapshot, re-running that same sync would just re-insert
+# it right back. Only syncing when the file's mtime actually advances means a delete
+# sticks until the next real scan runs - at which point, if the host is genuinely still
+# alive, it reappearing is correct (that's a fresh discovery, not the old delete undone).
+
+
 def _load_discovery_inventory() -> tuple[list, str | None]:
     """Return (assets, last_scan_iso) from the SQLite store, syncing in whatever the
-    latest Run-Discovery.ps1 JSON snapshot has first. Empty list if no discovery scan
-    has ever run and the DB has nothing in it yet."""
+    latest Run-Discovery.ps1 JSON snapshot has first (only if it's changed since the
+    last sync). Empty list if no discovery scan has ever run and the DB has nothing yet."""
+    global _last_synced_mtime
     last_scan = None
     try:
         if DISCOVERY_INVENTORY_PATH.exists():
-            last_scan = datetime.utcfromtimestamp(DISCOVERY_INVENTORY_PATH.stat().st_mtime).isoformat()
-            with open(DISCOVERY_INVENTORY_PATH, encoding="utf-8-sig") as fh:
-                raw = json.load(fh)
-                if isinstance(raw, dict):
-                    raw = [raw]
-                _sync_assets_to_db(raw)
+            mtime = DISCOVERY_INVENTORY_PATH.stat().st_mtime
+            last_scan = datetime.utcfromtimestamp(mtime).isoformat()
+            if mtime != _last_synced_mtime:
+                with open(DISCOVERY_INVENTORY_PATH, encoding="utf-8-sig") as fh:
+                    raw = json.load(fh)
+                    if isinstance(raw, dict):
+                        raw = [raw]
+                    _sync_assets_to_db(raw)
+                _last_synced_mtime = mtime
     except Exception:
         pass
 
@@ -490,6 +503,18 @@ def _load_discovery_inventory() -> tuple[list, str | None]:
             conn.close()
     except Exception:
         return [], last_scan
+
+
+def _delete_asset(dedup_key: str) -> bool:
+    """Manually remove one asset from the inventory (e.g. a decommissioned device or a
+    stray duplicate). Returns True if a row was actually deleted."""
+    conn = _get_assets_db()
+    try:
+        with conn:
+            cur = conn.execute("DELETE FROM assets WHERE dedup_key = ?", (dedup_key,))
+            return cur.rowcount > 0
+    finally:
+        conn.close()
 
 
 ONLINE_THRESHOLD_MINUTES = 20
@@ -911,6 +936,17 @@ def pdq_comparison():
         total=total,
         pct=pct,
     )
+
+
+@app.route("/assets/delete", methods=["POST"])
+def assets_delete():
+    """Manual delete of one asset (decommissioned device, stray duplicate, etc.). Sticks
+    until the next real Discovery scan re-finds that host, if it's genuinely still alive
+    - see the _last_synced_mtime note on _load_discovery_inventory."""
+    dedup_key = request.form.get("dedup_key", "").strip()
+    if dedup_key:
+        _delete_asset(dedup_key)
+    return redirect(url_for("assets_list"))
 
 
 @app.route("/assets")
