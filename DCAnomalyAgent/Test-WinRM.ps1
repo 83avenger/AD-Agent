@@ -44,10 +44,14 @@ if (-not $ComputerName) {
     $inventoryPath = Join-Path $outDir 'asset-inventory.json'
     if (Test-Path $inventoryPath) {
         $inventory = @(Get-Content -Raw -Path $inventoryPath | ConvertFrom-Json)
+        # ForEach+Where instead of Select-Object -ExpandProperty: the latter throws
+        # "Property Name cannot be found" if ANY object in the pipeline lacks that
+        # property (e.g. a malformed/legacy entry), aborting the whole script instead
+        # of just skipping that one entry.
         $ComputerName = @($inventory | Where-Object {
             $_.AssetType -in @('Domain Controller', 'Server', 'Desktop', 'Laptop', 'Workstation') -or
             ($_.OpenPorts -and $_.OpenPorts -match 'WinRM')
-        } | Select-Object -ExpandProperty Name)
+        } | ForEach-Object { $_.Name } | Where-Object { $_ })
     }
     if (-not $ComputerName) {
         Write-Host "No -ComputerName given and no Windows hosts found in the Discovery inventory. Run Run-Discovery.ps1 first, or pass -ComputerName explicitly."
