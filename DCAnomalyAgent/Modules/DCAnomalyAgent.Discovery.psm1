@@ -90,6 +90,10 @@ function Expand-Cidr {
     .SYNOPSIS
         Expand a CIDR (e.g. 10.0.0.0/24) into individual host IPs. Supports /16-/32.
         A bare IP with no /prefix (e.g. 10.0.0.5) is treated as /32 - a single host.
+        A hostname (anything that isn't IP/CIDR-shaped) is resolved via DNS to its
+        current IP(s) at scan time - useful for targeting a specific device whose IP
+        changes on every DHCP renewal (e.g. a laptop) instead of a fixed address that
+        goes stale within days.
     #>
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Cidr)
@@ -98,7 +102,18 @@ function Expand-Cidr {
         $Cidr = "$Cidr/32"
     }
     if ($Cidr -notmatch '^(\d{1,3}(?:\.\d{1,3}){3})/(\d{1,2})$') {
-        throw "Invalid CIDR: $Cidr"
+        if ($Cidr -match '^\d') {
+            throw "Invalid CIDR: $Cidr"   # looked like an IP/CIDR attempt but didn't parse - don't silently DNS-resolve digits
+        }
+        try {
+            $resolved = [System.Net.Dns]::GetHostAddresses($Cidr) |
+                Where-Object { $_.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork } |
+                ForEach-Object { $_.ToString() }
+        } catch {
+            throw "Could not resolve hostname '$Cidr' to an IP address: $_"
+        }
+        if (-not $resolved) { throw "Hostname '$Cidr' resolved to no IPv4 address." }
+        return $resolved
     }
     $baseIp = $Matches[1]; $prefix = [int]$Matches[2]
     if ($prefix -lt 16 -or $prefix -gt 32) { throw "Prefix /$prefix out of supported range (/16-/32)." }
@@ -291,7 +306,7 @@ function Export-AssetInventory {
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][array]$Inventory,
+        [Parameter(Mandatory)][AllowEmptyCollection()][array]$Inventory,
         [Parameter(Mandatory)][string]$OutputDir
     )
 

@@ -167,8 +167,8 @@
 
     <div class="form-grid">
       <div>
-        <label for="cidr">Network CIDR ranges or single IPs <span style="color:var(--muted); font-weight:400;">(optional)</span></label>
-        <textarea id="cidr" name="cidr" rows="3" placeholder="10.0.0.0/24, 10.0.1.0/25, 10.0.1.50&#10;(one per line, or comma-separated — a bare IP scans just that host)"></textarea>
+        <label for="cidr">Network CIDR ranges, single IPs, or hostnames <span style="color:var(--muted); font-weight:400;">(optional)</span></label>
+        <textarea id="cidr" name="cidr" rows="3" placeholder="10.0.0.0/24, 10.0.1.0/25, 10.0.1.50, Jump-Jeremy.amg.local&#10;(one per line, or comma-separated — a hostname is resolved to its current IP at scan time, so it stays correct even after a DHCP renewal)"></textarea>
       </div>
       <div>
         <label for="cloudflare_warp_cidr">Cloudflare WARP range <span style="color:var(--muted); font-weight:400;">(optional)</span></label>

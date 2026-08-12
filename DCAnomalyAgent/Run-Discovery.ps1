@@ -9,9 +9,11 @@
     Enumerate domain-joined computers from Active Directory.
 
 .PARAMETER Cidr
-    One or more CIDR ranges to network-scan (e.g. '10.0.0.0/24','10.0.1.0/24'), or a bare
-    IP (e.g. '10.0.1.50') to scan just that one host. Picks up non-domain and non-Windows
-    (Linux/appliance) hosts too.
+    One or more CIDR ranges to network-scan (e.g. '10.0.0.0/24','10.0.1.0/24'), a bare
+    IP (e.g. '10.0.1.50') to scan just that one host, or a hostname (e.g.
+    'laptop01.contoso.com') resolved to its current IP at scan time - useful for a device
+    whose IP changes on every DHCP renewal, where a fixed IP would go stale within days.
+    Picks up non-domain and non-Windows (Linux/appliance) hosts too.
 
 .PARAMETER JsonOutput
     Emit the inventory as JSON on stdout (used by the web UI).
