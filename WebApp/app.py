@@ -659,6 +659,86 @@ def winrm_test():
     return render_template("winrm_test.html", results=results, error=error, hosts_input=hosts_input)
 
 
+# ── PDQ Inventory feature comparison ─────────────────────────────────────────
+# Hand-maintained checklist, updated as features land. Status: "covered" | "partial" | "gap".
+# This is intentionally scoped to PDQ Inventory's own feature set (discovery/hardware/
+# software inventory) - compliance/anomaly/zero-day/certs are a separate "beyond PDQ"
+# section since PDQ Inventory doesn't do security/compliance scanning at all.
+PDQ_COMPARISON = [
+    {"category": "Discovery & Scanning", "features": [
+        {"feature": "Agentless scanning (no client install)", "status": "covered", "note": "WinRM, same agentless model as PDQ's WMI approach"},
+        {"feature": "Active Directory discovery", "status": "covered", "note": "Run-Discovery.ps1 -FromAD"},
+        {"feature": "Network / IP range (CIDR) scanning", "status": "covered", "note": "Mixed prefix sizes, /16-/32, single-IP too"},
+        {"feature": "Scheduled recurring scans", "status": "covered", "note": "Windows Scheduled Tasks under the gMSA"},
+        {"feature": "Remote/VPN device discovery", "status": "covered", "note": "Cloudflare WARP range scanning - PDQ has no equivalent out of the box"},
+        {"feature": "CSV / manual host list import", "status": "gap", "note": None},
+        {"feature": "Duplicate device detection & merge", "status": "gap", "note": None},
+    ]},
+    {"category": "Hardware Inventory", "features": [
+        {"feature": "CPU / RAM / disk specs", "status": "gap", "note": "Next up"},
+        {"feature": "BIOS / serial number / manufacturer / model", "status": "gap", "note": "Next up - feeds device age below"},
+        {"feature": "Device age via warranty lookup", "status": "partial", "note": "Dell/HP/Lenovo API module built (Get-DeviceAge); not yet wired to a hardware collection pass or live-tested against real keys"},
+        {"feature": "Monitor / peripheral inventory", "status": "gap", "note": "Not scannable for most peripherals - see Integrations page"},
+        {"feature": "Network adapter / MAC inventory", "status": "gap", "note": None},
+    ]},
+    {"category": "Software Inventory", "features": [
+        {"feature": "Installed software list per device", "status": "covered", "note": None},
+        {"feature": "Version / publisher / install date", "status": "covered", "note": None},
+        {"feature": "Fleet-wide software search", "status": "covered", "note": "Software List page"},
+        {"feature": "License / install-count metering", "status": "gap", "note": None},
+        {"feature": "Software change history over time", "status": "gap", "note": None},
+    ]},
+    {"category": "Categorization & Grouping", "features": [
+        {"feature": "Device type categorization", "status": "covered", "note": "Desktop / Laptop / Server / Domain Controller via chassis probe"},
+        {"feature": "Dynamic/smart groups (saved filters)", "status": "gap", "note": None},
+        {"feature": "Manual tagging", "status": "gap", "note": None},
+        {"feature": "OU-based grouping", "status": "partial", "note": "AD discovery works; no OU-specific grouping UI yet"},
+    ]},
+    {"category": "Status & Diagnostics", "features": [
+        {"feature": "Online/offline & last-seen status", "status": "covered", "note": None},
+        {"feature": "Connectivity/agent test tooling", "status": "covered", "note": "WinRM Test page - TCP/WSMan/Invoke-Command, per host"},
+        {"feature": "Collection-failure diagnostics", "status": "covered", "note": "CollectionNote + discovery.log - PDQ's own troubleshooting is less transparent here"},
+    ]},
+    {"category": "Reporting & Dashboards", "features": [
+        {"feature": "Central web dashboard", "status": "covered", "note": None},
+        {"feature": "Per-device drill-down", "status": "covered", "note": None},
+        {"feature": "CSV / PDF export", "status": "covered", "note": None},
+        {"feature": "Custom report builder", "status": "gap", "note": None},
+    ]},
+    {"category": "Alerting & Automation", "features": [
+        {"feature": "Email/Teams alerts on findings", "status": "covered", "note": None},
+        {"feature": "Alert on risky software detected", "status": "covered", "note": "Zero-day/KEV cross-reference - PDQ has no equivalent"},
+        {"feature": "Scriptable custom scanners", "status": "partial", "note": "Compliance-control framework is analogous but not a generic ad-hoc scanner UI"},
+        {"feature": "Patch/software deployment", "status": "gap", "note": "Out of scope by design - detection tool, not a deployment tool (that's PDQ Deploy's job, not PDQ Inventory's)"},
+    ]},
+]
+
+PDQ_EXCLUSIVES = [
+    "CIS / NIST / ISO 27001 / HIPAA / OWASP compliance scanning",
+    "AD security anomaly detection (UEBA-lite, privileged group changes, GPO drift)",
+    "Certificate expiry monitoring (stores, TLS endpoints, Enterprise CA)",
+    "CISA KEV / NVD zero-day exposure cross-referenced against installed software",
+]
+
+
+@app.route("/pdq-comparison")
+def pdq_comparison():
+    counts = {"covered": 0, "partial": 0, "gap": 0}
+    for cat in PDQ_COMPARISON:
+        for item in cat["features"]:
+            counts[item["status"]] += 1
+    total = sum(counts.values())
+    pct = round((counts["covered"] + 0.5 * counts["partial"]) / total * 100) if total else 0
+    return render_template(
+        "pdq_comparison.html",
+        categories=PDQ_COMPARISON,
+        exclusives=PDQ_EXCLUSIVES,
+        counts=counts,
+        total=total,
+        pct=pct,
+    )
+
+
 @app.route("/assets")
 def assets_list():
     """Full, always-available table of every discovered asset (not the dashboard's

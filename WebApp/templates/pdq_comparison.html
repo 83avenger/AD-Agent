@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block title %}Feature Tracker — AD-Agent vs PDQ Inventory{% endblock %}
+
+{% block extra_head %}
+<style>
+  /* PDQ-style dark navy/teal theme, scoped to this page's content area only. */
+  .pdq-wrap {
+    background: #16222b;
+    margin: 1.5rem -1.5rem -2rem;
+    padding: 2rem 1.5rem 3rem;
+    border-radius: 10px 10px 0 0;
+    color: #e7eef2;
+  }
+  .pdq-hero { text-align: center; padding: 1rem 0 2rem; }
+  .pdq-hero h1 { font-size: 1.9rem; font-weight: 800; color: #ffffff; letter-spacing: -.01em; }
+  .pdq-hero p { color: #9fb4bd; font-size: .92rem; margin-top: .5rem; max-width: 640px; margin-left: auto; margin-right: auto; }
+  .pdq-teal { color: #3dd6b0; }
+
+  .pdq-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
+  .pdq-kpi { background: #1d2e39; border: 1px solid #2a3f4b; border-radius: 10px; padding: 1.2rem; text-align: center; }
+  .pdq-kpi .n { font-size: 2.2rem; font-weight: 800; line-height: 1; }
+  .pdq-kpi .l { font-size: .76rem; color: #9fb4bd; margin-top: .4rem; text-transform: uppercase; letter-spacing: .04em; font-weight: 700; }
+  .pdq-kpi.big .n { color: #3dd6b0; }
+  .pdq-kpi.covered .n { color: #3dd6b0; }
+  .pdq-kpi.partial .n { color: #f0b429; }
+  .pdq-kpi.gap .n { color: #6b8290; }
+
+  .pdq-bar { height: 10px; border-radius: 6px; overflow: hidden; display: flex; background: #101a21; margin-bottom: 2.2rem; }
+  .pdq-bar span { height: 100%; }
+
+  .pdq-cat { background: #1d2e39; border: 1px solid #2a3f4b; border-radius: 10px; margin-bottom: 1.1rem; overflow: hidden; }
+  .pdq-cat-h { padding: .85rem 1.2rem; font-weight: 800; font-size: .92rem; background: #223541; color: #fff; letter-spacing: .01em; }
+  .pdq-row { display: grid; grid-template-columns: 28px 1fr auto; gap: .8rem; align-items: start; padding: .7rem 1.2rem; border-top: 1px solid #223541; }
+  .pdq-row .icon { font-weight: 800; font-size: .95rem; text-align: center; margin-top: .1rem; }
+  .pdq-row .icon.covered { color: #3dd6b0; }
+  .pdq-row .icon.partial { color: #f0b429; }
+  .pdq-row .icon.gap { color: #55707d; }
+  .pdq-row .ft { font-weight: 600; font-size: .88rem; }
+  .pdq-row .note { color: #8fa4ae; font-size: .78rem; margin-top: .15rem; }
+  .pdq-badge { font-size: .66rem; font-weight: 800; padding: .18rem .55rem; border-radius: 5px; text-transform: uppercase; letter-spacing: .04em; white-space: nowrap; }
+  .pdq-badge.covered { background: rgba(61,214,176,.15); color: #3dd6b0; }
+  .pdq-badge.partial { background: rgba(240,180,41,.15); color: #f0b429; }
+  .pdq-badge.gap { background: rgba(107,130,144,.18); color: #9fb4bd; }
+
+  .pdq-exclusives { background: linear-gradient(135deg, #123330, #16222b); border: 1px solid #2a5f52; border-radius: 10px; padding: 1.3rem 1.4rem; margin-top: 2rem; }
+  .pdq-exclusives h3 { color: #3dd6b0; font-size: 1rem; font-weight: 800; margin-bottom: .3rem; }
+  .pdq-exclusives p { color: #9fb4bd; font-size: .82rem; margin-bottom: .9rem; }
+  .pdq-exclusives ul { list-style: none; display: grid; gap: .5rem; }
+  .pdq-exclusives li { font-size: .85rem; color: #e7eef2; padding-left: 1.4rem; position: relative; }
+  .pdq-exclusives li::before { content: "★"; position: absolute; left: 0; color: #3dd6b0; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="pdq-wrap">
+  <div class="pdq-hero">
+    <h1>AD-Agent <span class="pdq-teal">vs</span> PDQ Inventory</h1>
+    <p>Live feature tracker, updated as capabilities land. Scored against PDQ Inventory's own
+      discovery/hardware/software feature set — compliance, anomaly detection, and zero-day
+      exposure are a separate category below since PDQ Inventory doesn't do security scanning at all.</p>
+  </div>
+
+  <div class="pdq-kpis">
+    <div class="pdq-kpi big"><div class="n">{{ pct }}%</div><div class="l">Overall parity</div></div>
+    <div class="pdq-kpi covered"><div class="n">{{ counts.covered }}</div><div class="l">Covered</div></div>
+    <div class="pdq-kpi partial"><div class="n">{{ counts.partial }}</div><div class="l">Partial</div></div>
+    <div class="pdq-kpi gap"><div class="n">{{ counts.gap }}</div><div class="l">Gap</div></div>
+  </div>
+
+  <div class="pdq-bar">
+    <span style="width:{{ (counts.covered / total * 100) if total else 0 }}%; background:#3dd6b0;"></span>
+    <span style="width:{{ (counts.partial / total * 100) if total else 0 }}%; background:#f0b429;"></span>
+    <span style="width:{{ (counts.gap / total * 100) if total else 0 }}%; background:#3a4d59;"></span>
+  </div>
+
+  {% for cat in categories %}
+  <div class="pdq-cat">
+    <div class="pdq-cat-h">{{ cat.category }}</div>
+    {% for item in cat.features %}
+    <div class="pdq-row">
+      <div class="icon {{ item.status }}">{% if item.status == 'covered' %}✓{% elif item.status == 'partial' %}◐{% else %}—{% endif %}</div>
+      <div>
+        <div class="ft">{{ item.feature }}</div>
+        {% if item.note %}<div class="note">{{ item.note }}</div>{% endif %}
+      </div>
+      <div><span class="pdq-badge {{ item.status }}">{{ item.status }}</span></div>
+    </div>
+    {% endfor %}
+  </div>
+  {% endfor %}
+
+  <div class="pdq-exclusives">
+    <h3>★ Beyond PDQ</h3>
+    <p>Capabilities PDQ Inventory doesn't have at all — not counted in the parity score above, since they're outside its scope.</p>
+    <ul>
+      {% for x in exclusives %}<li>{{ x }}</li>{% endfor %}
+    </ul>
+  </div>
+</div>
+{% endblock %}
