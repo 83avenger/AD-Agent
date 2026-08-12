@@ -616,6 +616,41 @@ def vendor_warranty_settings():
     )
 
 
+@app.route("/software")
+def software_list():
+    """Standalone, always-available view of every collected software record across every
+    device — not tied to a specific scan run, and not limited to clicking through devices
+    one at a time on the dashboard. Also surfaces WHY a device has nothing collected yet
+    (WinRM error, or skipped because WinRM wasn't seen open during discovery), pulling
+    together both the shared scan snapshot and the live discovery inventory."""
+    data, demo = _load_snapshot()
+    all_sw = data.get("SoftwareInventory") or []
+    software = [s for s in all_sw if not s.get("Error")]
+    vulnerable = data.get("VulnerableSoftware") or []
+
+    issues = [
+        {"ComputerName": s.get("ComputerName"), "Reason": s.get("Error")}
+        for s in all_sw if s.get("Error")
+    ]
+    assets, _ = _load_discovery_inventory()
+    covered = {i["ComputerName"] for i in issues} | {s.get("ComputerName") for s in software}
+    for a in assets:
+        note = a.get("CollectionNote")
+        name = a.get("Name")
+        if note and name not in covered:
+            issues.append({"ComputerName": name, "Reason": note})
+            covered.add(name)
+
+    return render_template(
+        "software.html",
+        demo=demo,
+        software=software,
+        vulnerable=vulnerable,
+        issues=issues,
+        host_count=len({s.get("ComputerName") for s in software if s.get("ComputerName")}),
+    )
+
+
 @app.route("/discovery/run", methods=["POST"])
 def discovery_run():
     """Discovery-only run (+ software inventory by default): no anomaly, compliance,

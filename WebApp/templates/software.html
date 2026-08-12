@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+{% block title %}Software List — DC Anomaly Agent{% endblock %}
+
+{% block content %}
+
+<div style="margin: 1.5rem 0 .5rem;">
+  <h1 style="font-size:1.6rem; font-weight:800; color:var(--brand-dark);">Software List</h1>
+  <p style="color:var(--muted); font-size:.9rem; margin-top:.3rem;">
+    Every installed-software record collected so far, across every device — from both
+    Discovery and Software Inventory scans. Updates automatically after each run.
+  </p>
+</div>
+
+{% if demo %}
+<div class="alert alert-demo">⚠ No scan snapshot exists yet — showing demo data.</div>
+{% endif %}
+
+<div class="score-grid">
+  <div class="score-card">
+    <div class="num">{{ host_count }}</div>
+    <div class="lbl">Hosts with software collected</div>
+  </div>
+  <div class="score-card {{ 'crit' if vulnerable else 'good' }}">
+    <div class="num">{{ vulnerable|length }}</div>
+    <div class="lbl">Zero-day exposure hits</div>
+  </div>
+  <div class="score-card {{ 'warn' if issues else 'good' }}">
+    <div class="num">{{ issues|length }}</div>
+    <div class="lbl">Hosts with collection issues</div>
+  </div>
+  <div class="score-card">
+    <div class="num">{{ software|length }}</div>
+    <div class="lbl">Total software records</div>
+  </div>
+</div>
+
+{% if issues %}
+<div class="card">
+  <div class="card-header">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+    </svg>
+    Collection issues — why some devices have no software listed
+  </div>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>Computer</th><th>Reason</th></tr></thead>
+      <tbody>
+        {% for i in issues %}
+        <tr><td>{{ i.ComputerName }}</td><td style="color:var(--muted); font-size:.82rem;">{{ i.Reason }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+{% if vulnerable %}
+<div class="card">
+  <div class="card-header">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <path d="M12 9v4"/><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+    </svg>
+    Zero-day exposure via installed software
+  </div>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>CVE</th><th>Software</th><th>Computer</th><th>Category</th><th>Ransomware</th><th>Due date</th></tr></thead>
+      <tbody>
+        {% for v in vulnerable %}
+        <tr>
+          <td>{{ v.CveId }}</td>
+          <td>{{ v.SoftwareName }} {{ v.SoftwareVersion }}</td>
+          <td>{{ v.ComputerName }}</td>
+          <td>{{ v.Category }}</td>
+          <td>{% if v.KnownRansomwareCampaignUse|lower == 'known' %}<span class="badge badge-critical">Known</span>{% else %}—{% endif %}</td>
+          <td>{{ v.DueDate or '—' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+<div class="card">
+  <div class="card-header">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <rect x="1" y="4" width="22" height="16" rx="2"/><line x1="1" y1="10" x2="23" y2="10"/>
+    </svg>
+    All installed software ({{ software|length }})
+  </div>
+  <input type="text" id="swFilter" placeholder="Filter by computer, name, publisher…"
+    style="width:100%; padding:.55rem .85rem; border:1px solid var(--border); border-radius:var(--radius);
+      font-size:.875rem; margin-bottom:1rem;" onkeyup="filterSoftware()">
+  <div class="tbl-wrap">
+    <table id="swTable">
+      <thead><tr><th>Computer</th><th>Category</th><th>Name</th><th>Version</th><th>Publisher</th><th>Arch</th><th>Install date</th></tr></thead>
+      <tbody>
+        {% for s in software %}
+        <tr>
+          <td>{{ s.ComputerName }}</td>
+          <td>{{ s.Category }}</td>
+          <td>{{ s.Name }}</td>
+          <td>{{ s.Version }}</td>
+          <td>{{ s.Publisher }}</td>
+          <td>{{ s.Architecture }}</td>
+          <td>{{ s.InstallDate }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="7" style="text-align:center; color:var(--muted);">No software collected yet — run a Discovery or Software Inventory scan.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+function filterSoftware(){
+  const q = document.getElementById('swFilter').value.toLowerCase();
+  document.querySelectorAll('#swTable tbody tr').forEach(row=>{
+    row.style.display = row.textContent.toLowerCase().includes(q) ? '' : 'none';
+  });
+}
+</script>
+{% endblock %}
