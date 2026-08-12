@@ -8,7 +8,7 @@
 .PARAMETER JsonOutput
     Emit the status as JSON on stdout (used by the web UI).
 #>
-[CmdletBinding()]
+[CmdletBinding(PositionalBinding = $false)]
 param(
     # Left unset by default and resolved below (not here) - $PSScriptRoot is not reliably
     # populated while param() default values are evaluated in Windows PowerShell 5.1.

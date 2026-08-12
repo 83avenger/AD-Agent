@@ -59,7 +59,7 @@
 .EXAMPLE
     .\Run-Discovery.ps1 -CloudflareWarpCidr '100.96.0.0/12'
 #>
-[CmdletBinding()]
+[CmdletBinding(PositionalBinding = $false)]
 param(
     # Left unset by default and resolved below (not here) - $PSScriptRoot is not reliably
     # populated while param() default values are evaluated in Windows PowerShell 5.1.

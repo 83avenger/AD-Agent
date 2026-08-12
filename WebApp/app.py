@@ -34,6 +34,10 @@ APP_ROOT      = Path(__file__).parent
 PS_SCRIPT     = APP_ROOT.parent / "DCAnomalyAgent" / "Run-AnomalyScan.ps1"
 DISCOVERY_SCRIPT = APP_ROOT.parent / "DCAnomalyAgent" / "Run-Discovery.ps1"
 STATE_DIR     = APP_ROOT.parent / "DCAnomalyAgent" / "State"
+# Passed explicitly as -ConfigPath on every PowerShell invocation below, rather than
+# relying on each script's own default resolution - belt-and-braces against any argument
+# mis-binding (a stray value landing on -ConfigPath instead of its intended parameter).
+SETTINGS_PATH = APP_ROOT.parent / "DCAnomalyAgent" / "Config" / "settings.psd1"
 SNAPSHOT_PATH = STATE_DIR / "latest-scan.json"
 DISCOVERY_INVENTORY_PATH = STATE_DIR / "asset-inventory.json"
 INTEGRATIONS_STATUS_PATH = STATE_DIR / "integrations-status.json"
@@ -80,6 +84,7 @@ def _run_scan(
     cmd = [
         pwsh, "-NoProfile", "-ExecutionPolicy", "Bypass",
         "-File", str(PS_SCRIPT),
+        "-ConfigPath", str(SETTINGS_PATH),
         "-DomainControllerOverride", dc_override,
         "-JsonOutput",
     ]
@@ -144,7 +149,8 @@ def _run_discovery(
     if not pwsh:
         return None, "PowerShell (pwsh/powershell) not found on PATH."
 
-    cmd = [pwsh, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(DISCOVERY_SCRIPT), "-JsonOutput"]
+    cmd = [pwsh, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(DISCOVERY_SCRIPT),
+           "-ConfigPath", str(SETTINGS_PATH), "-JsonOutput"]
     if from_ad:
         cmd.append("-FromAD")
     if cidr:
@@ -568,7 +574,8 @@ def integrations_refresh():
     if pwsh:
         try:
             subprocess.run(
-                [pwsh, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(INTEGRATIONS_SCRIPT)],
+                [pwsh, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(INTEGRATIONS_SCRIPT),
+                 "-ConfigPath", str(SETTINGS_PATH)],
                 capture_output=True, text=True, timeout=30,
             )
         except Exception as exc:
@@ -633,7 +640,8 @@ def winrm_test():
         if not pwsh:
             error = "PowerShell (pwsh/powershell) not found on PATH."
         else:
-            cmd = [pwsh, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(WINRM_TEST_SCRIPT), "-JsonOutput"]
+            cmd = [pwsh, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(WINRM_TEST_SCRIPT),
+                   "-ConfigPath", str(SETTINGS_PATH), "-JsonOutput"]
             if hosts:
                 cmd += ["-ComputerName"] + hosts
             try:

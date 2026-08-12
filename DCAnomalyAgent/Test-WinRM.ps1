@@ -19,7 +19,7 @@
     .\Test-WinRM.ps1
     # tests every Windows host Discovery has found so far
 #>
-[CmdletBinding()]
+[CmdletBinding(PositionalBinding = $false)]
 param(
     [string[]]$ComputerName,
     [string]$ConfigPath,
