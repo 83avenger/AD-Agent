@@ -3,7 +3,7 @@
 function Find-FailedLogonAnomalies {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][array]$FailedLogonEvents,
+        [Parameter(Mandatory)][AllowNull()][AllowEmptyCollection()][array]$FailedLogonEvents,
         [Parameter(Mandatory)][int]$BurstThreshold
     )
 
@@ -53,7 +53,7 @@ function Find-FailedLogonAnomalies {
 
 function Find-PrivilegedGroupAnomalies {
     [CmdletBinding()]
-    param([Parameter(Mandatory)][array]$GroupChangeEvents)
+    param([Parameter(Mandatory)][AllowNull()][AllowEmptyCollection()][array]$GroupChangeEvents)
 
     $GroupChangeEvents | ForEach-Object {
         [pscustomobject]@{
@@ -68,7 +68,7 @@ function Find-PrivilegedGroupAnomalies {
 
 function Find-NewPrivilegedAccountAnomalies {
     [CmdletBinding()]
-    param([Parameter(Mandatory)][array]$NewPrivilegedAccounts)
+    param([Parameter(Mandatory)][AllowNull()][AllowEmptyCollection()][array]$NewPrivilegedAccounts)
 
     $NewPrivilegedAccounts | ForEach-Object {
         [pscustomobject]@{

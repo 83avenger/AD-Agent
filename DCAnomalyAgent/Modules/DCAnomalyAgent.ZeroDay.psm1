@@ -98,7 +98,7 @@ function Get-ZeroDayMatches {
 
     # --- CISA KEV ---
     $kevEntries = Get-CisaKevFeed -Config $Config
-    $matches    = @()
+    $zdMatches  = @()
 
     foreach ($entry in $kevEntries) {
         $dateAdded = if ($entry.dateAdded) { [datetime]$entry.dateAdded } else { [datetime]::MinValue }
@@ -107,7 +107,7 @@ function Get-ZeroDayMatches {
         $text = "$($entry.vendorProject) $($entry.product)"
         $hit  = $watchList | Where-Object { $text -match [regex]::Escape($_) }
         if ($hit) {
-            $matches += [pscustomobject]@{
+            $zdMatches += [pscustomobject]@{
                 CveId                      = $entry.cveID
                 VendorProject              = $entry.vendorProject
                 Product                    = $entry.product
@@ -123,17 +123,17 @@ function Get-ZeroDayMatches {
     }
 
     # --- NVD (secondary - only for products not already covered by KEV) ---
-    $kevCveIds = $matches | Select-Object -ExpandProperty CveId
+    $kevCveIds = $zdMatches | Select-Object -ExpandProperty CveId
     $nvdResults = Get-NvdCveFeed -Products $watchList -Config $Config
     foreach ($nvd in $nvdResults) {
         if ($nvd.CveId -notin $kevCveIds) {
-            $matches += $nvd
+            $zdMatches += $nvd
         }
     }
 
     # Unary comma preserves an empty array through return (PowerShell otherwise
     # unrolls @() to $null, which would break the caller when there are 0 matches).
-    return ,$matches
+    return ,$zdMatches
 }
 
 function Update-ZeroDayBaseline {

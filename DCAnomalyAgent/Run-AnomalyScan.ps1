@@ -172,17 +172,23 @@ foreach ($dc in $config.DomainControllers) {
     Write-ScanLog "Anomaly scan: $dc ($startTime - $endTime)"
 
     try {
-        $failedLogons = Get-FailedLogonEvents -ComputerName $dc -StartTime $startTime -EndTime $endTime
+        # @() wrapping matters: Get-WinEvent (inside each collector) returns $null - not an
+        # empty array - when zero events match, which is the common/good case (e.g. no
+        # failed logons). PowerShell unrolls that $null straight through the assignment, and
+        # binding $null to a Mandatory [array] parameter below throws "Cannot bind argument
+        # ... because it is null" - which used to abort the entire DC's scan on the very
+        # first collector call, every time there was nothing to report.
+        $failedLogons = @(Get-FailedLogonEvents -ComputerName $dc -StartTime $startTime -EndTime $endTime)
         $allAnomalies += Find-FailedLogonAnomalies -FailedLogonEvents $failedLogons -BurstThreshold $config.FailedLogonBurstThreshold
 
-        $successLogons = Get-SuccessfulLogonEvents -ComputerName $dc -StartTime $startTime -EndTime $endTime
+        $successLogons = @(Get-SuccessfulLogonEvents -ComputerName $dc -StartTime $startTime -EndTime $endTime)
         $allSuccessfulLogons += $successLogons
 
-        $groupChanges = Get-PrivilegedGroupChangeEvents -ComputerName $dc -StartTime $startTime -EndTime $endTime -PrivilegedGroups $config.PrivilegedGroups
+        $groupChanges = @(Get-PrivilegedGroupChangeEvents -ComputerName $dc -StartTime $startTime -EndTime $endTime -PrivilegedGroups $config.PrivilegedGroups)
         $allAnomalies += Find-PrivilegedGroupAnomalies -GroupChangeEvents $groupChanges
 
-        $newPrivAccounts = Get-NewPrivilegedAccounts -ComputerName $dc -StartTime $startTime -EndTime $endTime `
-            -PrivilegedGroups $config.PrivilegedGroups -WindowHours $config.NewAccountToPrivilegedGroupWindowHours
+        $newPrivAccounts = @(Get-NewPrivilegedAccounts -ComputerName $dc -StartTime $startTime -EndTime $endTime `
+            -PrivilegedGroups $config.PrivilegedGroups -WindowHours $config.NewAccountToPrivilegedGroupWindowHours)
         $allAnomalies += Find-NewPrivilegedAccountAnomalies -NewPrivilegedAccounts $newPrivAccounts
 
         $gpoResult = Get-GpoChangeEvents -ComputerName $dc -StartTime $startTime -EndTime $endTime -KnownGpoVersions $knownGpoVersions
@@ -204,7 +210,7 @@ Write-ScanLog "Anomaly scan complete: $($allAnomalies.Count) finding(s)."
 
 if ($DryRun) {
     Write-Host "`n=== ANOMALIES ==="
-    $allAnomalies | Format-Table -AutoSize
+    $allAnomalies | Format-Table -AutoSize | Out-String -Width 300 | Write-Host
 }
 
 if (-not $DryRun -and $allAnomalies.Count -gt 0) {
@@ -278,7 +284,7 @@ if ($ComplianceScan -and $config.Compliance.Enabled) {
 
     if ($DryRun) {
         Write-Host "`n=== COMPLIANCE GAPS ==="
-        $gaps | Select-Object ControlId, Severity, Title, ComputerName, Actual | Format-Table -AutoSize
+        $gaps | Select-Object ControlId, Severity, Title, ComputerName, Actual | Format-Table -AutoSize | Out-String -Width 300 | Write-Host
         Write-Host "`nOverall score: $($summary.ScorePct)%  ($($summary.Passed)/$($summary.TotalControls) controls passing)"
     } else {
         if ($config.Reporting.Teams.Enabled) {
@@ -329,7 +335,7 @@ if ($runZeroDay) {
         if ($DryRun) {
             Write-Host "`n=== ZERO-DAY MATCHES (new/due-soon) ==="
             $newZeroDays | Select-Object CveId, VendorProject, Product, DateAdded, DueDate, KnownRansomwareCampaignUse |
-                Format-Table -AutoSize
+                Format-Table -AutoSize | Out-String -Width 300 | Write-Host
         } elseif ($newZeroDays.Count -gt 0) {
             if ($config.Reporting.Teams.Enabled) {
                 Send-TeamsZeroDayAlert -WebhookUrl $config.Reporting.Teams.WebhookUrl -ZeroDays $newZeroDays
@@ -420,7 +426,7 @@ if ($runCertScan) {
 
     if ($DryRun) {
         Write-Host "`n=== EXPIRING CERTIFICATES (within $thresholdDays days) ==="
-        $expiringReal | Select-Object Severity, DaysRemaining, Subject, Sources, Locations | Format-Table -AutoSize
+        $expiringReal | Select-Object Severity, DaysRemaining, Subject, Sources, Locations | Format-Table -AutoSize | Out-String -Width 300 | Write-Host
     } elseif ($expiringReal.Count -gt 0) {
         if ($config.Reporting.Teams.Enabled) {
             Send-TeamsCertificateReport -WebhookUrl $config.Reporting.Teams.WebhookUrl `
@@ -493,10 +499,10 @@ if ($runSoftwareInventory) {
     if ($DryRun) {
         Write-Host "`n=== SOFTWARE INVENTORY (top products) ==="
         $installedOnly | Group-Object Name | Sort-Object Count -Descending | Select-Object -First 15 Name, Count |
-            Format-Table -AutoSize
+            Format-Table -AutoSize | Out-String -Width 300 | Write-Host
         if ($vulnerableSoftware.Count -gt 0) {
             Write-Host "`n=== ZERO-DAY EXPOSURE (installed software) ==="
-            $vulnerableSoftware | Format-Table -AutoSize
+            $vulnerableSoftware | Format-Table -AutoSize | Out-String -Width 300 | Write-Host
         }
     } elseif ($vulnerableSoftware.Count -gt 0) {
         if ($config.Reporting.Teams.Enabled) {
