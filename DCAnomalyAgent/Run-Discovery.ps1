@@ -149,8 +149,12 @@ $newInventory = @(Merge-AssetInventory -AdAssets $adAssets -NetworkAssets $netAs
 # only attempted where WinRM was seen open during the scan (or the host came from AD,
 # which doesn't record OpenPorts and is worth trying regardless).
 if (-not $SkipCategorize) {
+    Write-DiscoveryLog "Categorizing $($newInventory.Count) newly-discovered asset(s)..."
     foreach ($asset in $newInventory) {
-        if ($asset.AssetType -notin @('DomainController', 'MemberServer', 'Workstation', 'Windows')) { continue }
+        if ($asset.AssetType -notin @('DomainController', 'MemberServer', 'Workstation', 'Windows')) {
+            Write-DiscoveryLog "SKIP categorize for $($asset.Name): AssetType '$($asset.AssetType)' is not a Windows type" -Level SKIP
+            continue
+        }
         $hasOpenPorts = $null -ne $asset.PSObject.Properties['OpenPorts']
         if ($hasOpenPorts -and $asset.OpenPorts -notmatch 'WinRM') {
             $note = "Not categorized: WinRM (5985/5986) was not seen open during the network scan (ports seen: $($asset.OpenPorts)). Category probe and software collection both need WinRM."
@@ -158,8 +162,11 @@ if (-not $SkipCategorize) {
             $asset | Add-Member -NotePropertyName CollectionNote -NotePropertyValue $note -Force
             continue
         }
+        Write-DiscoveryLog "Probing device category for $($asset.Name) over WinRM (this may take a few seconds)..."
         try {
+            $before = $asset.AssetType
             $asset.AssetType = Get-DeviceCategory -ComputerName $asset.Name -AssetType $asset.AssetType
+            Write-DiscoveryLog "Categorized $($asset.Name): $before -> $($asset.AssetType)"
         } catch {
             $note = "Category probe failed over WinRM: $_. Common causes: gMSA lacks Remote Management Users on this host, WinRM is open but not configured for this identity, or the host is genuinely unreachable."
             Write-DiscoveryLog "ERROR categorize $($asset.Name): $_" -Level ERROR
