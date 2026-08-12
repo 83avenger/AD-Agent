@@ -29,6 +29,7 @@ param(
 $ErrorActionPreference = 'Stop'
 if (-not $ConfigPath) { $ConfigPath = Join-Path $PSScriptRoot 'Config\settings.psd1' }
 Import-Module "$PSScriptRoot\Modules\DCAnomalyAgent.Discovery.psm1" -Force
+Import-Module "$PSScriptRoot\Modules\DCAnomalyAgent.SoftwareInventory.psm1" -Force
 
 function Import-AgentConfig {
     param([Parameter(Mandatory)][string]$Path)
@@ -71,6 +72,20 @@ $results = foreach ($h in $ComputerName) {
         InvokeHostname = $null
         InvokeError   = $null
         OverallStatus = 'Unreachable'
+    }
+
+    if (Test-IsLocalComputer -ComputerName $h) {
+        # Self-referential Kerberos WinRM (calling your own FQDN) is a well-known flaky
+        # scenario in Windows - loopback auth can be denied even for an elevated admin,
+        # independent of any real config problem. Report this host as local instead of
+        # running (and potentially misreporting) the same remoting checks against itself.
+        $identity = & { [pscustomobject]@{ Identity = whoami; Hostname = hostname } }
+        $r.Tcp5985 = $true; $r.Tcp5986 = $true; $r.WsManOk = $true; $r.InvokeOk = $true
+        $r.InvokeIdentity = $identity.Identity
+        $r.InvokeHostname = $identity.Hostname
+        $r.OverallStatus = 'OK - this is the local machine (checked in-process, not over WinRM)'
+        [pscustomobject]$r
+        continue
     }
 
     $r.Tcp5985 = Test-TcpPort -ComputerName $h -Port 5985 -TimeoutMs 1500

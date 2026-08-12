@@ -27,6 +27,28 @@ $script:DesktopChassisTypes = @(3, 4, 5, 6, 7, 13, 15, 16, 35, 36)
 # (e.g. via network scan) that wasn't already labeled MemberServer by AD/OS checks.
 $script:ServerChassisTypes = @(17, 23, 28)
 
+function Test-IsLocalComputer {
+    <#
+    .SYNOPSIS
+        True when $ComputerName refers to the machine this code is already running on.
+        Self-referential Kerberos WinRM (calling your own FQDN via Invoke-Command) is a
+        well-known flaky scenario in Windows - loopback authentication can be denied even
+        for an elevated admin, independent of any real group-membership/GPO configuration.
+        Running the collection in-process instead of over WinRM sidesteps that entirely.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$ComputerName)
+
+    if ($ComputerName -in @('localhost', '.', '127.0.0.1', '::1')) { return $true }
+    $short = $ComputerName.Split('.')[0]
+    if ($short -ieq $env:COMPUTERNAME) { return $true }
+    try {
+        $fqdn = [System.Net.Dns]::GetHostEntry([System.Net.Dns]::GetHostName()).HostName
+        if ($ComputerName -ieq $fqdn) { return $true }
+    } catch { }
+    return $false
+}
+
 function Get-DeviceCategory {
     <#
     .SYNOPSIS
@@ -45,9 +67,12 @@ function Get-DeviceCategory {
     if ($AssetType -eq 'MemberServer')     { return 'Server' }
     if ($AssetType -notin @('Workstation', 'Windows')) { return $AssetType }
 
+    $chassisScript = { (Get-CimInstance -ClassName Win32_SystemEnclosure -ErrorAction Stop).ChassisTypes }
     try {
-        $chassis = Invoke-Command -ComputerName $ComputerName -ScriptBlock {
-            (Get-CimInstance -ClassName Win32_SystemEnclosure -ErrorAction Stop).ChassisTypes
+        $chassis = if (Test-IsLocalComputer -ComputerName $ComputerName) {
+            & $chassisScript
+        } else {
+            Invoke-Command -ComputerName $ComputerName -ScriptBlock $chassisScript
         }
         $codes = @($chassis)
         if ($codes | Where-Object { $_ -in $script:ServerChassisTypes })  { return 'Server' }
@@ -71,27 +96,37 @@ function Get-InstalledSoftware {
         [Parameter(Mandatory)][string]$Category
     )
 
-    try {
-        $raw = Invoke-Command -ComputerName $ComputerName -ScriptBlock {
-            $paths = @(
-                'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
-                'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*',
-                'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'
-            )
-            foreach ($path in $paths) {
-                $arch = if ($path -match 'WOW6432Node') { '32-bit' } else { '64-bit' }
-                Get-ItemProperty -Path $path -ErrorAction SilentlyContinue |
-                    Where-Object { $_.DisplayName -and -not $_.SystemComponent -and -not $_.ParentKeyName } |
-                    ForEach-Object {
-                        [pscustomobject]@{
-                            Name        = $_.DisplayName
-                            Version     = "$($_.DisplayVersion)"
-                            Publisher   = "$($_.Publisher)"
-                            InstallDate = "$($_.InstallDate)"
-                            Architecture = $arch
-                        }
+    $collectScript = {
+        $paths = @(
+            'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+            'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*',
+            'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'
+        )
+        foreach ($path in $paths) {
+            $arch = if ($path -match 'WOW6432Node') { '32-bit' } else { '64-bit' }
+            Get-ItemProperty -Path $path -ErrorAction SilentlyContinue |
+                Where-Object { $_.DisplayName -and -not $_.SystemComponent -and -not $_.ParentKeyName } |
+                ForEach-Object {
+                    [pscustomobject]@{
+                        Name        = $_.DisplayName
+                        Version     = "$($_.DisplayVersion)"
+                        Publisher   = "$($_.Publisher)"
+                        InstallDate = "$($_.InstallDate)"
+                        Architecture = $arch
                     }
-            }
+                }
+        }
+    }
+
+    try {
+        # Self-referential Kerberos WinRM (calling your own FQDN) can be denied even for
+        # an elevated admin - a Windows loopback-authentication quirk, not a real
+        # permissions gap. Collecting in-process for the local machine sidesteps it and
+        # is also just faster (no remoting overhead) for the jump server's own inventory.
+        $raw = if (Test-IsLocalComputer -ComputerName $ComputerName) {
+            & $collectScript
+        } else {
+            Invoke-Command -ComputerName $ComputerName -ScriptBlock $collectScript
         }
     } catch {
         return [pscustomobject]@{
@@ -226,4 +261,4 @@ function Format-SoftwareInventoryReport {
 }
 
 Export-ModuleMember -Function Get-DeviceCategory, Get-InstalledSoftware, `
-    Find-VulnerableInstalledSoftware, Format-SoftwareInventoryReport
+    Find-VulnerableInstalledSoftware, Format-SoftwareInventoryReport, Test-IsLocalComputer
