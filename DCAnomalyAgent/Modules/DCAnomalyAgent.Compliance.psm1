@@ -222,27 +222,75 @@ function Format-ComplianceReport {
     return $sb.ToString()
 }
 
+function Get-DiscoveryInventoryHosts {
+    <#
+    .SYNOPSIS
+        Reads State\asset-inventory.json (built by Run-Discovery.ps1) and returns the
+        Name of every host categorized into the given config AssetType, so compliance/
+        anomaly scanning can target whatever Discovery actually found instead of a
+        hand-maintained static list.
+    .PARAMETER AssetType
+        DomainController | MemberServer | Workstation | Linux (settings.psd1 naming).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$AssetType,
+        [Parameter(Mandatory)][string]$InventoryPath
+    )
+
+    if (-not (Test-Path $InventoryPath)) { return @() }
+
+    # Discovery's categories (Get-DeviceCategory) use different labels than the config's
+    # AssetType names - map between them here rather than changing either naming scheme.
+    $categoryMap = @{
+        DomainController = @('Domain Controller')
+        MemberServer      = @('Server')
+        Workstation       = @('Desktop', 'Laptop', 'Workstation')
+        Linux             = @('Linux')
+    }
+    $wantedCategories = $categoryMap[$AssetType]
+    if (-not $wantedCategories) { return @() }
+
+    try {
+        $inventory = @(Get-Content -Raw -Path $InventoryPath | ConvertFrom-Json)
+        return @($inventory | Where-Object { $_.AssetType -in $wantedCategories } | Select-Object -ExpandProperty Name)
+    } catch {
+        Write-Warning "Failed to read discovery inventory at ${InventoryPath}: $_"
+        return @()
+    }
+}
+
 function Get-AssetTargets {
     <#
     .SYNOPSIS
         Resolves the list of target hosts for a given asset type from config,
-        optionally discovering them from Active Directory.
+        optionally discovering them from Active Directory and/or the Discovery inventory.
     .PARAMETER AssetType
         DomainController | MemberServer | Workstation
     .PARAMETER AssetConfig
-        The per-asset-type hashtable from settings.psd1 (Hosts, DiscoverFromAD).
+        The per-asset-type hashtable from settings.psd1 (Hosts, DiscoverFromAD,
+        DiscoverFromInventory).
     .PARAMETER FallbackHosts
         Used for DomainController when Hosts is empty (the top-level DomainControllers list).
+    .PARAMETER InventoryPath
+        Path to State\asset-inventory.json, used when AssetConfig.DiscoverFromInventory is
+        $true. Only takes effect if that flag is set - existing Hosts/DiscoverFromAD
+        behavior is unchanged otherwise.
     #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$AssetType,
         [Parameter(Mandatory)][hashtable]$AssetConfig,
-        [string[]]$FallbackHosts
+        [string[]]$FallbackHosts,
+        [string]$InventoryPath
     )
 
     $targets = @()
     if ($AssetConfig.Hosts) { $targets += $AssetConfig.Hosts }
+
+    if ($AssetConfig.DiscoverFromInventory -and $InventoryPath) {
+        $targets += Get-DiscoveryInventoryHosts -AssetType $AssetType -InventoryPath $InventoryPath
+    }
 
     if ($AssetConfig.DiscoverFromAD) {
         try {
@@ -282,4 +330,5 @@ function Get-AssetTargets {
 }
 
 Export-ModuleMember -Function Get-ComplianceControls, Invoke-ComplianceScan, `
-    Get-ComplianceGaps, Get-ComplianceSummary, Format-ComplianceReport, Get-AssetTargets
+    Get-ComplianceGaps, Get-ComplianceSummary, Format-ComplianceReport, Get-AssetTargets, `
+    Get-DiscoveryInventoryHosts

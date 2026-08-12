@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+{% block title %}Discovered Assets — DC Anomaly Agent{% endblock %}
+
+{% block content %}
+
+<div style="margin: 1.5rem 0 .5rem;">
+  <h1 style="font-size:1.6rem; font-weight:800; color:var(--brand-dark);">Discovered Assets</h1>
+  <p style="color:var(--muted); font-size:.9rem; margin-top:.3rem;">
+    Every asset Run-Discovery.ps1 has found so far, consolidated across all your scan batches.
+    This is the same data compliance/anomaly/certificate/software scans now target when
+    <code>DiscoverFromInventory</code> is enabled for that asset type in settings.psd1.
+  </p>
+</div>
+
+{% if not assets %}
+<div class="alert alert-info">
+  No discovery scan has been run yet. Use the <a href="/" style="color:var(--accent);">Discovery Only</a>
+  section on the New Scan page, or run <code>Run-Discovery.ps1</code> from the CLI.
+</div>
+{% endif %}
+
+<div class="score-grid">
+  <div class="score-card">
+    <div class="num">{{ total }}</div>
+    <div class="lbl">Total discovered assets</div>
+  </div>
+  <div class="score-card {{ 'good' if online_count else 'warn' }}">
+    <div class="num">{{ online_count }}</div>
+    <div class="lbl">Online now</div>
+  </div>
+  <div class="score-card">
+    <div class="num">{{ by_type|length }}</div>
+    <div class="lbl">Asset type(s)</div>
+  </div>
+  <div class="score-card">
+    <div class="num">{{ by_source|length }}</div>
+    <div class="lbl">Discovery source(s)</div>
+  </div>
+</div>
+
+{% if by_type %}
+<div class="card">
+  <div class="card-header">By type</div>
+  <div class="checkbox-group">
+    {% for t, c in by_type %}<span class="badge badge-low">{{ t }}: {{ c }}</span>{% endfor %}
+  </div>
+  <div class="card-header" style="margin-top:1rem;">By source</div>
+  <div class="checkbox-group">
+    {% for s, c in by_source %}<span class="badge badge-low">{{ s }}: {{ c }}</span>{% endfor %}
+  </div>
+</div>
+{% endif %}
+
+<div class="card">
+  <div class="card-header">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/>
+      <rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/>
+    </svg>
+    All assets ({{ total }})
+  </div>
+  <input type="text" id="assetFilter" placeholder="Filter by name, IP, type, source…"
+    style="width:100%; padding:.55rem .85rem; border:1px solid var(--border); border-radius:var(--radius);
+      font-size:.875rem; margin-bottom:1rem;" onkeyup="filterAssets()">
+  <div class="tbl-wrap">
+    <table id="assetTable">
+      <thead><tr><th>Name</th><th>IP</th><th>Type</th><th>OS</th><th>Source</th><th>Status</th></tr></thead>
+      <tbody>
+        {% for a in assets %}
+        <tr>
+          <td>{{ a.Name }}</td>
+          <td>{{ a.IP }}</td>
+          <td>{{ a.AssetType }}</td>
+          <td>{{ a.OS or '—' }}</td>
+          <td>{{ a.Source }}</td>
+          <td>
+            {% if is_online(a.LastSeen) %}
+              <span class="badge" style="background:var(--success); color:white;">Online</span>
+            {% else %}
+              <span class="badge" style="background:var(--border); color:var(--muted);">Offline</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6" style="text-align:center; color:var(--muted);">No assets discovered yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<p style="font-size:.8rem; color:var(--muted); margin-top:1rem;">
+  See <a href="/dashboard" style="color:var(--accent);">the live dashboard</a> for a click-through
+  device detail view (installed software per device), or <a href="/software" style="color:var(--accent);">Software List</a>
+  for every collected software record across all devices.
+</p>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+function filterAssets(){
+  const q = document.getElementById('assetFilter').value.toLowerCase();
+  document.querySelectorAll('#assetTable tbody tr').forEach(row=>{
+    row.style.display = row.textContent.toLowerCase().includes(q) ? '' : 'none';
+  });
+}
+</script>
+{% endblock %}

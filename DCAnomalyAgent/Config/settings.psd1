@@ -93,25 +93,33 @@
     # Asset inventory - targets for compliance scanning by asset type.
     # Each AssetType runs only the controls whose AppliesTo includes that type.
     # You can list hosts explicitly, or set DiscoverFromAD = $true to auto-enumerate.
+    # DiscoverFromInventory pulls this asset type's target list from Run-Discovery.ps1's
+    # output (State\asset-inventory.json) - whatever it actually found and categorized,
+    # instead of a hand-maintained Hosts list. This is why Discovery is meant to run
+    # first: compliance/anomaly/certificate/software scans below read its inventory.
+    # If asset-inventory.json doesn't exist yet (Discovery hasn't run), this source is
+    # simply skipped - Hosts/DiscoverFromAD (if also set) still work as a fallback.
     Assets = @{
         DomainController = @{
             # Defaults to the DomainControllers list above when empty
             Hosts         = @()
             DiscoverFromAD = $true   # uses Get-ADDomainController -Filter *
+            DiscoverFromInventory = $true
         }
         MemberServer = @{
-            # Empty until you add real hostnames here, or set DiscoverFromAD = $true below
-            # to auto-enumerate server OS computers from AD instead of maintaining a list.
             Hosts         = @()
-            DiscoverFromAD = $false
+            DiscoverFromAD = $false  # set $true to auto-enumerate server OS computers from AD
+            DiscoverFromInventory = $true
         }
         Workstation = @{
             Hosts         = @()
             DiscoverFromAD = $false  # set $true to auto-enumerate client OS computers from AD
+            DiscoverFromInventory = $true
         }
         Linux = @{
-            Hosts         = @('web01.contoso.com','web02.contoso.com')
+            Hosts         = @()
             DiscoverFromAD = $false  # most Linux hosts are found via network discovery, not AD
+            DiscoverFromInventory = $true
             # SSH connection context for Linux checks. Uses the Windows OpenSSH client.
             # Key-based, non-interactive auth; the key must be readable by the gMSA.
             Ssh = @{

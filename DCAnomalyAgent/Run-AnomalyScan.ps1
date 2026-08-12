@@ -83,6 +83,10 @@ if ($ZeroDayScan -or ($config -and $config.ZeroDay -and $config.ZeroDay.Enabled)
 $config = Import-AgentConfig -Path $ConfigPath
 $scanTime = Get-Date
 
+# Asset types with Assets.<Type>.DiscoverFromInventory = $true pull their target list from
+# here (Run-Discovery.ps1's output) instead of - or in addition to - a static Hosts list.
+$discoveryInventoryPath = "$PSScriptRoot\State\asset-inventory.json"
+
 # Re-check after config is loaded
 if (-not (Get-Module DCAnomalyAgent.ZeroDay -ErrorAction SilentlyContinue)) {
     if ($ZeroDayScan -or ($config.ZeroDay -and $config.ZeroDay.Enabled)) {
@@ -249,7 +253,7 @@ if ($ComplianceScan -and $config.Compliance.Enabled) {
             $assetCfg = $config.Assets[$at]
             if (-not $assetCfg) { Write-ScanLog "No asset config for '$at' - skipping."; continue }
             $targets = Get-AssetTargets -AssetType $at -AssetConfig $assetCfg `
-                -FallbackHosts $config.DomainControllers
+                -FallbackHosts $config.DomainControllers -InventoryPath $discoveryInventoryPath
         }
 
         if (-not $targets) { Write-ScanLog "No targets resolved for '$at' - skipping."; continue }
@@ -364,7 +368,7 @@ if ($runCertScan) {
         $assetCfg = $config.Assets[$at]
         if (-not $assetCfg) { continue }
         try {
-            $targets = Get-AssetTargets -AssetType $at -AssetConfig $assetCfg -FallbackHosts $config.DomainControllers
+            $targets = Get-AssetTargets -AssetType $at -AssetConfig $assetCfg -FallbackHosts $config.DomainControllers -InventoryPath $discoveryInventoryPath
         } catch {
             Write-ScanLog "ERROR (cert: resolve $at targets): $_"; continue
         }
@@ -457,7 +461,7 @@ if ($runSoftwareInventory) {
         $assetCfg = $config.Assets[$at]
         if (-not $assetCfg) { continue }
         try {
-            $targets = Get-AssetTargets -AssetType $at -AssetConfig $assetCfg -FallbackHosts $config.DomainControllers
+            $targets = Get-AssetTargets -AssetType $at -AssetConfig $assetCfg -FallbackHosts $config.DomainControllers -InventoryPath $discoveryInventoryPath
         } catch {
             Write-ScanLog "ERROR (software: resolve $at targets): $_"; continue
         }

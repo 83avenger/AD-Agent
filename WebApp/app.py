@@ -616,6 +616,32 @@ def vendor_warranty_settings():
     )
 
 
+@app.route("/assets")
+def assets_list():
+    """Full, always-available table of every discovered asset (not the dashboard's
+    NOC-display truncated-to-40 version) - searchable, with online/last-seen status."""
+    assets, last_scan = _load_discovery_inventory()
+    by_type: dict = {}
+    by_source: dict = {}
+    online_count = 0
+    for a in assets:
+        by_type[a.get("AssetType", "Unknown")] = by_type.get(a.get("AssetType", "Unknown"), 0) + 1
+        by_source[a.get("Source", "Unknown")] = by_source.get(a.get("Source", "Unknown"), 0) + 1
+        if _is_online(a.get("LastSeen")):
+            online_count += 1
+
+    return render_template(
+        "assets.html",
+        assets=sorted(assets, key=lambda a: (a.get("AssetType", ""), a.get("Name", ""))),
+        total=len(assets),
+        online_count=online_count,
+        by_type=sorted(by_type.items(), key=lambda kv: -kv[1]),
+        by_source=sorted(by_source.items(), key=lambda kv: -kv[1]),
+        last_scan=last_scan,
+        is_online=_is_online,
+    )
+
+
 @app.route("/software")
 def software_list():
     """Standalone, always-available view of every collected software record across every
