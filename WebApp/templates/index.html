@@ -155,10 +155,15 @@
 
     <div class="checkbox-group" style="margin-bottom:1rem;">
       <div class="checkbox-chip">
-        <input type="checkbox" id="from_ad" name="from_ad" checked>
+        <input type="checkbox" id="from_ad" name="from_ad">
         <label for="from_ad">From Active Directory</label>
       </div>
     </div>
+    <p style="font-size:.78rem; color:var(--muted); margin-top:-.6rem; margin-bottom:1rem;">
+      Leave unchecked for a quick, targeted scan of just the CIDR/IP below. Checking this
+      also pulls every AD computer object (can be thousands) into the same run — only
+      check it when you actually want a full AD resync, not for a one-off host lookup.
+    </p>
 
     <div class="form-grid">
       <div>
