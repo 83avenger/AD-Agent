@@ -166,6 +166,16 @@ python app.py
 # Browse to http://localhost:5000  ·  Rotating dashboard at http://localhost:5000/dashboard
 ```
 
+Running it this way (interactively, in an RDP session) ties every WinRM call the web UI makes
+to whoever is logged into that session — which can behave differently than the gMSA-driven
+scan Scheduled Tasks (a host can work when a domain admin tests it manually but still fail
+through the web UI). For production, register it to run under the gMSA at startup instead:
+
+```powershell
+cd DCAnomalyAgent\Install
+.\Register-WebUIStartup.ps1 -GmsaAccount 'CONTOSO\svc-discoverAgt$' -PythonPath 'C:\Apps\Python312\python.exe'
+```
+
 ---
 
 ## Supported asset types
