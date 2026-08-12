@@ -7,6 +7,7 @@ that executes the Scheduled Task.
 
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -40,6 +41,13 @@ STATE_DIR     = APP_ROOT.parent / "DCAnomalyAgent" / "State"
 SETTINGS_PATH = APP_ROOT.parent / "DCAnomalyAgent" / "Config" / "settings.psd1"
 SNAPSHOT_PATH = STATE_DIR / "latest-scan.json"
 DISCOVERY_INVENTORY_PATH = STATE_DIR / "asset-inventory.json"
+# Canonical, ever-growing asset store. Run-Discovery.ps1 still writes the JSON file above
+# on every run (unchanged - no PowerShell-side dependency added); the web app upserts it
+# into this SQLite database on load, keyed by a stable dedup key. Rows are only ever
+# added/updated here, never deleted, so previously-discovered assets can't disappear
+# regardless of what a given scan run's JSON snapshot does or doesn't contain - and at
+# 3000+ assets, an indexed UPSERT scales far better than rewriting one flat JSON array.
+ASSETS_DB_PATH = STATE_DIR / "assets.db"
 INTEGRATIONS_STATUS_PATH = STATE_DIR / "integrations-status.json"
 INTEGRATIONS_SCRIPT      = APP_ROOT.parent / "DCAnomalyAgent" / "Get-IntegrationStatus.ps1"
 WINRM_TEST_SCRIPT        = APP_ROOT.parent / "DCAnomalyAgent" / "Test-WinRM.ps1"
@@ -355,19 +363,133 @@ def _save_vendor_warranty_secrets(update: dict) -> None:
         json.dump(data, fh, indent=2)
 
 
+def _get_assets_db() -> sqlite3.Connection:
+    """Opens a fresh connection per call rather than sharing one - simplest way to be
+    safe under waitress's threaded request handling without extra locking machinery.
+    WAL mode lets reads and writes overlap without blocking each other."""
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(ASSETS_DB_PATH), timeout=10)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.row_factory = sqlite3.Row
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS assets (
+            dedup_key       TEXT PRIMARY KEY,
+            name            TEXT,
+            ip              TEXT,
+            asset_type      TEXT,
+            os              TEXT,
+            open_ports      TEXT,
+            source          TEXT,
+            last_seen       TEXT,
+            collection_note TEXT,
+            software_json   TEXT,
+            first_seen      TEXT NOT NULL,
+            updated_at      TEXT NOT NULL
+        )
+    """)
+    return conn
+
+
+def _asset_dedup_key(asset: dict) -> str:
+    """Stable identity for an asset: lowercased hostname when it's a real (resolved)
+    name, falling back to IP for hosts DNS never resolved a name for. Matches the same
+    short-name-first convention Run-Discovery.ps1's own consolidation already uses."""
+    name = (asset.get("Name") or "").strip().lower()
+    ip = (asset.get("IP") or "").strip().lower()
+    if name and name != ip:
+        return name.split(".")[0]
+    return ip or name
+
+
+def _sync_assets_to_db(assets: list) -> None:
+    """Upsert every asset from the JSON snapshot into the DB. Never deletes - a host
+    missing from this particular snapshot (e.g. it wasn't in the subnet/zone just
+    scanned) simply isn't touched, so it stays exactly as last known."""
+    if not assets:
+        return
+    now = datetime.utcnow().isoformat()
+    conn = _get_assets_db()
+    try:
+        with conn:
+            for a in assets:
+                key = _asset_dedup_key(a)
+                if not key:
+                    continue
+                software = a.get("Software")
+                # A host discovered first as a bare IP (no reverse DNS yet) that later
+                # resolves a real hostname would otherwise keep two rows forever - one
+                # keyed by the old IP, one by the new name. Retire the stale IP-keyed row
+                # once a same-IP hostname record shows up, so it doesn't linger as a
+                # permanent duplicate at 3000+ assets.
+                name = (a.get("Name") or "").strip().lower()
+                ip = (a.get("IP") or "").strip().lower()
+                if name and name != ip and ip:
+                    conn.execute("DELETE FROM assets WHERE dedup_key = ? AND dedup_key != ?", (ip, key))
+                conn.execute("""
+                    INSERT INTO assets (dedup_key, name, ip, asset_type, os, open_ports,
+                        source, last_seen, collection_note, software_json, first_seen, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(dedup_key) DO UPDATE SET
+                        name            = excluded.name,
+                        ip              = excluded.ip,
+                        asset_type      = excluded.asset_type,
+                        os              = excluded.os,
+                        open_ports      = excluded.open_ports,
+                        source          = excluded.source,
+                        last_seen       = COALESCE(excluded.last_seen, assets.last_seen),
+                        collection_note = excluded.collection_note,
+                        software_json   = COALESCE(excluded.software_json, assets.software_json),
+                        updated_at      = excluded.updated_at
+                """, (
+                    key, a.get("Name"), a.get("IP"), a.get("AssetType"), a.get("OS"),
+                    a.get("OpenPorts"), a.get("Source"), a.get("LastSeen"), a.get("CollectionNote"),
+                    json.dumps(software) if software else None, now, now,
+                ))
+    finally:
+        conn.close()
+
+
+def _row_to_asset(row: sqlite3.Row) -> dict:
+    d = {
+        "Name": row["name"], "IP": row["ip"], "AssetType": row["asset_type"],
+        "OS": row["os"], "OpenPorts": row["open_ports"], "Source": row["source"],
+        "LastSeen": row["last_seen"],
+    }
+    if row["collection_note"]:
+        d["CollectionNote"] = row["collection_note"]
+    if row["software_json"]:
+        try:
+            d["Software"] = json.loads(row["software_json"])
+        except Exception:
+            pass
+    return d
+
+
 def _load_discovery_inventory() -> tuple[list, str | None]:
-    """Return (assets, last_scan_iso). Empty list if no discovery scan has run yet."""
+    """Return (assets, last_scan_iso) from the SQLite store, syncing in whatever the
+    latest Run-Discovery.ps1 JSON snapshot has first. Empty list if no discovery scan
+    has ever run and the DB has nothing in it yet."""
+    last_scan = None
     try:
         if DISCOVERY_INVENTORY_PATH.exists():
-            mtime = datetime.utcfromtimestamp(DISCOVERY_INVENTORY_PATH.stat().st_mtime).isoformat()
+            last_scan = datetime.utcfromtimestamp(DISCOVERY_INVENTORY_PATH.stat().st_mtime).isoformat()
             with open(DISCOVERY_INVENTORY_PATH, encoding="utf-8-sig") as fh:
-                assets = json.load(fh)
-                if isinstance(assets, dict):
-                    assets = [assets]
-                return assets, mtime
+                raw = json.load(fh)
+                if isinstance(raw, dict):
+                    raw = [raw]
+                _sync_assets_to_db(raw)
     except Exception:
         pass
-    return [], None
+
+    try:
+        conn = _get_assets_db()
+        try:
+            rows = conn.execute("SELECT * FROM assets ORDER BY asset_type, name").fetchall()
+            return [_row_to_asset(r) for r in rows], last_scan
+        finally:
+            conn.close()
+    except Exception:
+        return [], last_scan
 
 
 ONLINE_THRESHOLD_MINUTES = 20

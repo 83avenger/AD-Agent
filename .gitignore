@@ -1,6 +1,9 @@
 DCAnomalyAgent/State/*.json
 DCAnomalyAgent/State/*.log
 DCAnomalyAgent/State/*.md
+DCAnomalyAgent/State/*.db
+DCAnomalyAgent/State/*.db-wal
+DCAnomalyAgent/State/*.db-shm
 # Vendor/API secrets saved from the web UI's Integrations pages - never commit these.
 DCAnomalyAgent/Config/integration-secrets.json
 WebApp/reports/
