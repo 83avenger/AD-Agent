@@ -28,6 +28,10 @@
     <div class="num">{{ online_count }}</div>
     <div class="lbl">Online now</div>
   </div>
+  <div class="score-card {{ 'warn' if stale_count else 'good' }}">
+    <div class="num">{{ stale_count }}</div>
+    <div class="lbl">Stale (not seen {{ stale_days }}+ days)</div>
+  </div>
   <div class="score-card">
     <div class="num">{{ by_type|length }}</div>
     <div class="lbl">Asset type(s)</div>
@@ -64,7 +68,7 @@
       font-size:.875rem; margin-bottom:1rem;" onkeyup="filterAssets()">
   <div class="tbl-wrap">
     <table id="assetTable">
-      <thead><tr><th>Name</th><th>IP</th><th>Type</th><th>OS</th><th>Source</th><th>Status</th></tr></thead>
+      <thead><tr><th>Name</th><th>IP</th><th>Type</th><th>OS</th><th>Source</th><th>Status</th><th>Last Seen</th></tr></thead>
       <tbody>
         {% for a in assets %}
         <tr>
@@ -76,13 +80,18 @@
           <td>
             {% if is_online(a.LastSeen) %}
               <span class="badge" style="background:var(--success); color:white;">Online</span>
+            {% elif is_stale(a.LastSeen) %}
+              <span class="badge" style="background:var(--high); color:white;">Stale</span>
             {% else %}
               <span class="badge" style="background:var(--border); color:var(--muted);">Offline</span>
             {% endif %}
           </td>
+          <td style="{{ 'color:var(--high); font-weight:600;' if is_stale(a.LastSeen) else 'color:var(--muted);' }}">
+            {{ time_ago(a.LastSeen) }}
+          </td>
         </tr>
         {% else %}
-        <tr><td colspan="6" style="text-align:center; color:var(--muted);">No assets discovered yet.</td></tr>
+        <tr><td colspan="7" style="text-align:center; color:var(--muted);">No assets discovered yet.</td></tr>
         {% endfor %}
       </tbody>
     </table>

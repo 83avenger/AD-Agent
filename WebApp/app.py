@@ -379,6 +379,44 @@ def _is_online(last_seen_iso: str | None) -> bool:
         return False
 
 
+STALE_THRESHOLD_DAYS = 14  # e.g. a laptop out on leave for 2-3 weeks
+
+
+def _time_ago(last_seen_iso: str | None) -> str:
+    """Human-readable age since LastSeen - 'never seen', '3h ago', '23d ago', etc.
+    Distinct from _is_online: a device can be offline right now but seen recently
+    (last night), or offline and stale (genuinely absent from the network for a while,
+    e.g. someone on leave with their laptop off/at home)."""
+    if not last_seen_iso:
+        return "never seen"
+    try:
+        seen = datetime.fromisoformat(last_seen_iso.replace("Z", "+00:00"))
+        now = datetime.now(seen.tzinfo) if seen.tzinfo else datetime.utcnow()
+        delta = now - seen
+        secs = delta.total_seconds()
+        if secs < 0:
+            return "just now"
+        if secs < 3600:
+            return f"{int(secs // 60)}m ago"
+        if secs < 86400:
+            return f"{int(secs // 3600)}h ago"
+        return f"{int(secs // 86400)}d ago"
+    except Exception:
+        return "unknown"
+
+
+def _is_stale(last_seen_iso: str | None) -> bool:
+    """True when a device hasn't been seen in STALE_THRESHOLD_DAYS+ (or never)."""
+    if not last_seen_iso:
+        return True
+    try:
+        seen = datetime.fromisoformat(last_seen_iso.replace("Z", "+00:00"))
+        now = datetime.now(seen.tzinfo) if seen.tzinfo else datetime.utcnow()
+        return (now - seen).days >= STALE_THRESHOLD_DAYS
+    except Exception:
+        return True
+
+
 def _sev_counts(items: list, key: str = "Severity") -> dict:
     out = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0}
     for it in items:
@@ -755,21 +793,28 @@ def assets_list():
     by_type: dict = {}
     by_source: dict = {}
     online_count = 0
+    stale_count = 0
     for a in assets:
         by_type[a.get("AssetType", "Unknown")] = by_type.get(a.get("AssetType", "Unknown"), 0) + 1
         by_source[a.get("Source", "Unknown")] = by_source.get(a.get("Source", "Unknown"), 0) + 1
         if _is_online(a.get("LastSeen")):
             online_count += 1
+        if _is_stale(a.get("LastSeen")):
+            stale_count += 1
 
     return render_template(
         "assets.html",
         assets=sorted(assets, key=lambda a: (a.get("AssetType", ""), a.get("Name", ""))),
         total=len(assets),
         online_count=online_count,
+        stale_count=stale_count,
+        stale_days=STALE_THRESHOLD_DAYS,
         by_type=sorted(by_type.items(), key=lambda kv: -kv[1]),
         by_source=sorted(by_source.items(), key=lambda kv: -kv[1]),
         last_scan=last_scan,
         is_online=_is_online,
+        is_stale=_is_stale,
+        time_ago=_time_ago,
     )
 
 
