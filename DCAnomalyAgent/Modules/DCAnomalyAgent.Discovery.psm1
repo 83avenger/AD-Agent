@@ -89,10 +89,14 @@ function Expand-Cidr {
     <#
     .SYNOPSIS
         Expand a CIDR (e.g. 10.0.0.0/24) into individual host IPs. Supports /16-/32.
+        A bare IP with no /prefix (e.g. 10.0.0.5) is treated as /32 - a single host.
     #>
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Cidr)
 
+    if ($Cidr -match '^(\d{1,3}(?:\.\d{1,3}){3})$') {
+        $Cidr = "$Cidr/32"
+    }
     if ($Cidr -notmatch '^(\d{1,3}(?:\.\d{1,3}){3})/(\d{1,2})$') {
         throw "Invalid CIDR: $Cidr"
     }
