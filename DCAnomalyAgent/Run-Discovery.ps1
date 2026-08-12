@@ -76,6 +76,16 @@ param(
 
 $ErrorActionPreference = 'Stop'
 if (-not $ConfigPath) { $ConfigPath = Join-Path $PSScriptRoot 'Config\settings.psd1' }
+
+# PowerShell's parameter binder does NOT aggregate multiple space-separated tokens into
+# an array parameter when this script is invoked externally (e.g. Python's subprocess ->
+# pwsh -File ... -Cidr val1 val2 val3) - only the first token binds, and the rest become
+# unbindable stray arguments. The caller (WebApp/app.py) instead passes one comma-joined
+# string per multi-value parameter; splitting here handles that case, and is a harmless
+# no-op for normal array input (e.g. -Cidr 'a','b','c' from an interactive/CLI caller).
+if ($Cidr) { $Cidr = @($Cidr | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
+if ($CloudflareWarpCidr) { $CloudflareWarpCidr = @($CloudflareWarpCidr | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
+
 Import-Module "$PSScriptRoot\Modules\DCAnomalyAgent.Discovery.psm1" -Force
 Import-Module "$PSScriptRoot\Modules\DCAnomalyAgent.SoftwareInventory.psm1" -Force
 

@@ -45,7 +45,10 @@ param(
     [switch]$SkipAnomalyScan,
     [switch]$TestEmail,
     [string[]]$FrameworkFilter,
-    [ValidateSet('Critical','High','Medium','Low')][string[]]$SeverityFilter,
+    # No ValidateSet here (moved to a manual check below) - it would reject a
+    # comma-joined multi-value string (e.g. 'Critical,High') before the splitting logic
+    # below ever runs. See Run-Discovery.ps1 for why external -File invocation needs that.
+    [string[]]$SeverityFilter,
     [string]$DomainControllerOverride,
     [switch]$JsonOutput,
     # Limit the compliance scan to specific asset types. Default: all configured types.
@@ -57,6 +60,18 @@ param(
 
 $ErrorActionPreference = 'Stop'
 if (-not $ConfigPath) { $ConfigPath = Join-Path $PSScriptRoot 'Config\settings.psd1' }
+
+# External -File invocation (e.g. Python's subprocess -> pwsh -File ...) doesn't aggregate
+# multiple space-separated tokens into an array parameter - only the first token binds.
+# The web UI instead passes one comma-joined string per multi-value parameter; splitting
+# here handles that, and is a harmless no-op for normal array input.
+if ($FrameworkFilter) { $FrameworkFilter = @($FrameworkFilter | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
+if ($SeverityFilter) {
+    $SeverityFilter = @($SeverityFilter | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    $validSeverities = @('Critical', 'High', 'Medium', 'Low')
+    $invalid = @($SeverityFilter | Where-Object { $_ -notin $validSeverities })
+    if ($invalid) { throw "Invalid -SeverityFilter value(s): $($invalid -join ', '). Must be one of: $($validSeverities -join ', ')." }
+}
 
 function Import-AgentConfig {
     # Loads settings.psd1. Unlike Import-PowerShellDataFile (which evaluates in a

@@ -97,10 +97,15 @@ def _run_scan(
         cmd.append("-SoftwareInventoryScan")
     if "anomaly" not in scan_types:
         cmd.append("-SkipAnomalyScan")
+    # A comma-joined single argument, not multiple space-separated ones: PowerShell's
+    # parameter binder doesn't aggregate multiple tokens into an array when invoked
+    # externally like this (only the first token binds) - the target scripts split
+    # comma-joined values back into arrays themselves. See Run-Discovery.ps1's comment
+    # on this for the full explanation.
     if frameworks:
-        cmd += ["-FrameworkFilter"] + frameworks
+        cmd += ["-FrameworkFilter", ",".join(frameworks)]
     if severities:
-        cmd += ["-SeverityFilter"] + severities
+        cmd += ["-SeverityFilter", ",".join(severities)]
 
     try:
         result = subprocess.run(
@@ -153,10 +158,11 @@ def _run_discovery(
            "-ConfigPath", str(SETTINGS_PATH), "-JsonOutput"]
     if from_ad:
         cmd.append("-FromAD")
+    # Comma-joined single argument - see the -FrameworkFilter comment above for why.
     if cidr:
-        cmd += ["-Cidr"] + cidr
+        cmd += ["-Cidr", ",".join(cidr)]
     if cloudflare_warp_cidr:
-        cmd += ["-CloudflareWarpCidr"] + cloudflare_warp_cidr
+        cmd += ["-CloudflareWarpCidr", ",".join(cloudflare_warp_cidr)]
     if skip_categorize:
         cmd.append("-SkipCategorize")
     if skip_software:
@@ -681,7 +687,7 @@ def winrm_test():
             cmd = [pwsh, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(WINRM_TEST_SCRIPT),
                    "-ConfigPath", str(SETTINGS_PATH), "-JsonOutput"]
             if hosts:
-                cmd += ["-ComputerName"] + hosts
+                cmd += ["-ComputerName", ",".join(hosts)]
             try:
                 proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
                 raw = proc.stdout.strip()

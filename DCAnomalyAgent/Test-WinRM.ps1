@@ -28,6 +28,12 @@ param(
 
 $ErrorActionPreference = 'Stop'
 if (-not $ConfigPath) { $ConfigPath = Join-Path $PSScriptRoot 'Config\settings.psd1' }
+
+# See Run-Discovery.ps1 for why: external -File invocation doesn't aggregate multiple
+# space-separated tokens into an array parameter, so the web UI passes one comma-joined
+# string instead. Harmless no-op for normal array input.
+if ($ComputerName) { $ComputerName = @($ComputerName | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
+
 Import-Module "$PSScriptRoot\Modules\DCAnomalyAgent.Discovery.psm1" -Force
 Import-Module "$PSScriptRoot\Modules\DCAnomalyAgent.SoftwareInventory.psm1" -Force
 
