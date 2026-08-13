@@ -131,6 +131,15 @@ if (-not $CloudflareWarpCidr -and $config.Discovery -and $config.Discovery.Cloud
     $CloudflareWarpCidr = $config.Discovery.CloudflareWarpSubnets
 }
 
+# Restrict which ports the network scan actually probes to whatever your firewall change
+# request was approved for - see Discovery.ScanPorts in settings.psd1. Defaults to the
+# full classification set (Get-NetworkAsset's own default) if not configured.
+$scanPortsArgs = @{}
+if ($config.Discovery -and $config.Discovery.ScanPorts) {
+    $scanPortsArgs = @{ ScanPorts = $config.Discovery.ScanPorts }
+    Write-DiscoveryLog "Restricting network scan to configured ports: $(($config.Discovery.ScanPorts.Keys | Sort-Object) -join ', ')"
+}
+
 $adAssets  = @()
 $netAssets = @()
 
@@ -142,13 +151,13 @@ if ($FromAD) {
 
 if ($Cidr) {
     Write-DiscoveryLog "Scanning network ranges: $($Cidr -join ', ')"
-    $netAssets += @(Get-NetworkAsset -Cidr $Cidr -TimeoutMs $TimeoutMs)
+    $netAssets += @(Get-NetworkAsset -Cidr $Cidr -TimeoutMs $TimeoutMs @scanPortsArgs)
     Write-DiscoveryLog "Network scan found $($netAssets.Count) live host(s) so far."
 }
 
 if ($CloudflareWarpCidr) {
     Write-DiscoveryLog "Scanning Cloudflare WARP range(s): $($CloudflareWarpCidr -join ', ')"
-    $warpAssets = @(Get-NetworkAsset -Cidr $CloudflareWarpCidr -TimeoutMs $TimeoutMs -SourceLabel 'Cloudflare WARP')
+    $warpAssets = @(Get-NetworkAsset -Cidr $CloudflareWarpCidr -TimeoutMs $TimeoutMs -SourceLabel 'Cloudflare WARP' @scanPortsArgs)
     Write-DiscoveryLog "Cloudflare WARP scan found $($warpAssets.Count) live host(s)."
     $netAssets += $warpAssets
 }

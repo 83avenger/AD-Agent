@@ -146,6 +146,16 @@ function Get-NetworkAsset {
     .PARAMETER ThrottleLimit
         Max parallel host probes (PowerShell 7+ uses ForEach-Object -Parallel; on 5.1
         it falls back to sequential).
+    .PARAMETER ScanPorts
+        Which ports to probe, as a Name->Port hashtable. Defaults to the full
+        classification set (SMB/WinRM/RPC/SSH/LDAP/Kerberos/SNMP/Telnet/HTTPS). Firewall
+        change requests are often approved for a specific port list only (e.g. just
+        WinRM+SMB for end-user VLANs) - probing ports beyond what was actually approved
+        shows up as unexpected denied traffic in firewall logs. Pass a restricted
+        hashtable (e.g. @{ WinRM = 5985; SMB = 445 }) to only touch approved ports;
+        classification naturally degrades for signals that come from an omitted port
+        (e.g. no LDAP/Kerberos probe means Domain Controllers won't be distinguished from
+        other Windows hosts) rather than erroring.
     #>
     [CmdletBinding()]
     param(
@@ -154,7 +164,11 @@ function Get-NetworkAsset {
         [int]$ThrottleLimit = 64,
         # Tags every host found in this call, e.g. 'Cloudflare WARP' for remote/home
         # users connecting in via Zero Trust, vs the default on-prem 'NetworkScan'.
-        [string]$SourceLabel = 'NetworkScan'
+        [string]$SourceLabel = 'NetworkScan',
+        [hashtable]$ScanPorts = @{
+            SMB = 445; WinRM = 5985; RPC = 135; SSH = 22; LDAP = 389
+            Kerberos = 88; SNMP = 161; Telnet = 23; HTTPS = 443
+        }
     )
 
     $ips = foreach ($c in $Cidr) { Expand-Cidr -Cidr $c }
@@ -168,6 +182,7 @@ function Get-NetworkAsset {
             $ip          = $_
             $TimeoutMs   = $using:TimeoutMs
             $SourceLabel = $using:SourceLabel
+            $ScanPorts   = $using:ScanPorts
 
             function _port($h, $p, $t) {
                 try {
@@ -181,17 +196,11 @@ function Get-NetworkAsset {
                 } catch { return $false }
             }
 
-            $ports = @{
-                SMB     = _port $ip 445  $TimeoutMs
-                WinRM   = _port $ip 5985 $TimeoutMs
-                RPC     = _port $ip 135  $TimeoutMs
-                SSH     = _port $ip 22   $TimeoutMs
-                LDAP    = _port $ip 389  $TimeoutMs
-                Kerberos= _port $ip 88   $TimeoutMs
-                SNMP    = _port $ip 161  $TimeoutMs
-                Telnet  = _port $ip 23   $TimeoutMs
-                HTTPS   = _port $ip 443  $TimeoutMs
-            }
+            # Only probes ports actually present in $ScanPorts - a name omitted from that
+            # map is simply never touched (classification degrades gracefully rather than
+            # erroring on a missing key, since $ports.SomeOmittedName reads as $false/$null).
+            $ports = @{}
+            foreach ($portName in $ScanPorts.Keys) { $ports[$portName] = _port $ip $ScanPorts[$portName] $TimeoutMs }
 
             if (-not ($ports.Values -contains $true)) { return }  # host appears dead
 
@@ -228,17 +237,8 @@ function Get-NetworkAsset {
                 } catch { return $false }
             }
 
-            $ports = @{
-                SMB     = _port $ip 445  $TimeoutMs
-                WinRM   = _port $ip 5985 $TimeoutMs
-                RPC     = _port $ip 135  $TimeoutMs
-                SSH     = _port $ip 22   $TimeoutMs
-                LDAP    = _port $ip 389  $TimeoutMs
-                Kerberos= _port $ip 88   $TimeoutMs
-                SNMP    = _port $ip 161  $TimeoutMs
-                Telnet  = _port $ip 23   $TimeoutMs
-                HTTPS   = _port $ip 443  $TimeoutMs
-            }
+            $ports = @{}
+            foreach ($portName in $ScanPorts.Keys) { $ports[$portName] = _port $ip $ScanPorts[$portName] $TimeoutMs }
 
             if (-not ($ports.Values -contains $true)) { continue }  # host appears dead
 

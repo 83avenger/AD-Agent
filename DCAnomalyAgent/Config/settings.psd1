@@ -161,6 +161,17 @@
         CloudflareWarpSubnets = @(
             # '100.96.0.0/12'  # example only - replace with your actual WARP-assigned range
         )
+        # Restrict which ports the network scan probes on every host. Get-NetworkAsset's
+        # default probes 9 ports (SMB/WinRM/RPC/SSH/LDAP/Kerberos/SNMP/Telnet/HTTPS) to
+        # classify device type - but if your firewall change request was only approved for
+        # specific ports, probing the rest shows up as unexpected denied traffic in firewall
+        # logs. Uncomment and edit to match exactly what your network team approved, e.g. for
+        # end-user workstation VLANs that only allow WinRM+SMB from the scan host:
+        # ScanPorts = @{
+        #     WinRM = 5985
+        #     SMB   = 445
+        # }
+        # Leaving this commented out (or empty) uses the full default set above.
     }
 
     # Zero-day / CVE telemetry
