@@ -68,6 +68,31 @@ SEV_RANK = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3}
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET", os.urandom(24))
 
+AUDIT_LOG_PATH = STATE_DIR / "audit.log"
+
+
+def _remote_user() -> str:
+    """Identity of whoever made this request, if known. Register-IISReverseProxy.ps1
+    forwards the Windows-Authentication-verified username as X-Remote-User once that
+    proxy is deployed in front of the web UI; until then (or for anyone hitting the app
+    directly) there's no auth at all, so this is best-effort, not a security control by
+    itself - see the security review in ENTERPRISE-HARDENING-RUNBOOK.md."""
+    return request.headers.get("X-Remote-User") or f"unauthenticated@{request.remote_addr}"
+
+
+def _audit(action: str, detail: str = "") -> None:
+    """Appends one line per state-changing action (scan/discovery submitted, asset
+    deleted) so that once IIS auth is in front of this app, there's a record of who
+    triggered what - not just that it happened."""
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        line = f"[{datetime.utcnow().isoformat()}Z] user={_remote_user()} action={action} {detail}".rstrip()
+        with open(AUDIT_LOG_PATH, "a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+    except OSError:
+        pass  # audit logging must never break the request it's logging
+
+
 # ── Background job queue ────────────────────────────────────────────────────
 # Scans/discovery runs shell out to PowerShell and can take minutes against
 # many hosts. Running them synchronously inside a Flask request thread blocks
@@ -991,6 +1016,7 @@ def assets_delete():
     dedup_key = request.form.get("dedup_key", "").strip()
     if dedup_key:
         _delete_asset(dedup_key)
+        _audit("asset_delete", f"dedup_key={dedup_key}")
     return redirect(url_for("assets_list"))
 
 
@@ -1081,6 +1107,7 @@ def discovery_run():
         return render_template("index.html", error="Discovery needs at least one target: check "
                                 "“From Active Directory” or enter a CIDR range.")
 
+    _audit("discovery_submit", f"from_ad={from_ad} cidr={cidr} warp_cidr={warp_cidr}")
     job_id = _submit_job(
         "discovery", _discovery_job, from_ad, cidr, warp_cidr, skip_categorize, skip_software
     )
@@ -1110,6 +1137,7 @@ def scan():
     if not scan_types:
         scan_types = ["anomaly"]
 
+    _audit("scan_submit", f"dcs={dcs} scan_types={scan_types}")
     job_id = _submit_job("scan", _scan_job, dcs, scan_types, frameworks, severities)
     return render_template("job_wait.html", job_id=job_id, kind="scan")
 

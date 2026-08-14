@@ -178,6 +178,72 @@ Stop-ScheduledTask -TaskName 'AD-Agent-WebUI'; Start-ScheduledTask -TaskName 'AD
 
 ---
 
+## Phase 5 — Authentication (IIS reverse proxy + Windows Auth)
+
+Built now, per your request — **not deployed automatically; run this when you're ready.** This
+closes the biggest gap from the security review below: the web UI has no login today, so anyone
+who can reach its port can trigger scans, delete assets, and see every collected result.
+
+**5.1** Stage the IIS prerequisites the script can't fetch itself (no internet access assumed on
+an EDR-locked server):
+- [URL Rewrite](https://www.iis.net/downloads/microsoft/url-rewrite)
+- [Application Request Routing 3.0](https://www.iis.net/downloads/microsoft/application-request-routing)
+
+Download both on a machine with internet access, copy the MSIs to the server, install them (no
+reboot required).
+
+**5.2** Get a real certificate from your internal CA if you have one — the script can generate a
+self-signed cert to test with, but browsers will warn on it. Note the thumbprint if you have a
+real cert ready (`Get-ChildItem Cert:\LocalMachine\My`).
+
+**5.3** Run the script — test in a lab/staging server first, since this changes how the tool is
+reached (HTTPS + Windows Auth via IIS, instead of plain HTTP directly to the app):
+
+```powershell
+cd DCAnomalyAgent\Install
+.\Register-IISReverseProxy.ps1 `
+    -AllowedGroup 'AMG\AD-Agent-Analysts' `
+    -LockWebUIToLocalhost `
+    -GmsaAccount 'AMG\svc-discoverAgt$' `
+    -PythonPath 'C:\Apps\Python312\python.exe' `
+    -CertThumbprint '<thumbprint, or omit for self-signed>'
+```
+
+`-AllowedGroup` restricts access to that AD group (create it first if it doesn't exist yet -
+`New-ADGroup 'AD-Agent-Analysts' -GroupScope Global`, add your analysts as members). Omitting it
+still requires Windows auth but allows *any* authenticated domain user through - not what you
+want long-term.
+
+`-LockWebUIToLocalhost` re-registers the `AD-Agent-WebUI` task bound to `127.0.0.1` instead of
+`0.0.0.0`, so port 5000 stops being reachable from the network entirely - only IIS (443) is.
+
+**5.4** Restart the web UI task so the localhost-only binding takes effect:
+```powershell
+Stop-ScheduledTask -TaskName 'AD-Agent-WebUI'; Start-ScheduledTask -TaskName 'AD-Agent-WebUI'
+```
+
+**5.5** Browse to `https://jump-jeremy.amg.local/` — you should get a Windows Authentication
+prompt (or silent SSO if your browser/domain is configured for it), and be denied if you're not
+in `-AllowedGroup`.
+
+**5.6** Confirm the audit trail is working — trigger a scan or delete an asset, then:
+```powershell
+Get-Content DCAnomalyAgent\State\audit.log -Tail 5
+```
+Each line should show the real Windows username (e.g. `user=AMG\jsmith`), not
+`unauthenticated@<ip>` — that fallback only appears for requests that bypass the IIS proxy
+entirely, which shouldn't be possible once port 5000 is locked to localhost.
+
+**5.7** Update your firewall request: analysts should now hit **TCP/443 on the jump server**
+(IIS), not TCP/5000 directly. `firewall-request-ports.csv` row 20 has been updated to reflect
+this - hand the updated file to your network team.
+
+**5.8 (rollback)** If anything goes wrong, `Remove-Website -Name 'AD-Agent'` removes the IIS site,
+and re-running `Register-WebUIStartup.ps1` with `-BindHost '0.0.0.0'` restores direct access to
+port 5000 while you troubleshoot.
+
+---
+
 ## Quick verification checklist
 
 | Check | Command |
@@ -192,17 +258,22 @@ Stop-ScheduledTask -TaskName 'AD-Agent-WebUI'; Start-ScheduledTask -TaskName 'AD
 
 ## Security review
 
-### Pre-existing, not introduced by this work — flagging because it's the biggest gap
-- **No authentication on the web UI.** `firewall-request-ports.csv` already documents this
+### Pre-existing, not introduced by this work — addressed by Phase 5 below
+- **No authentication on the web UI.** `firewall-request-ports.csv` already documented this
   (`"no built-in auth"` on the port-5000 inbound rule). Anyone who can reach TCP 5000 can trigger
   scans/discovery, delete assets, and view every collected result — including installed software
   inventories, compliance gaps, and (if configured) vendor warranty API responses. This predates
-  the four phases here and wasn't part of what was asked for, but given "I hope the entire
-  solution is secure": **this is the one item worth prioritizing next.** Cheapest fix is fronting
-  port 5000 with an IIS/nginx reverse proxy doing Windows-integrated or basic auth restricted to
-  your analyst group, since the firewall doc already recommends fronting it with a reverse proxy.
-- **Traffic is plain HTTP**, not HTTPS, both to the web UI and (originally) between browser and
-  server. Same reverse-proxy step above should terminate TLS.
+  the four phases above. **`Register-IISReverseProxy.ps1` (Phase 5) fixes this** — IIS in front
+  doing Windows Authentication restricted to an AD group, with the Flask app locked to
+  localhost-only afterward. Built and ready; deploy it whenever you're ready to test it.
+- **Traffic is plain HTTP**, not HTTPS. Phase 5's IIS proxy terminates TLS (self-signed by
+  default, or a real cert from your internal CA via `-CertThumbprint`), so this is closed by the
+  same step.
+- **No audit trail of who did what.** Also closed by Phase 5: `app.py` now writes
+  `DCAnomalyAgent\State\audit.log` on every scan submit, discovery submit, and asset delete,
+  recording the Windows Authentication username IIS forwards via the `X-Remote-User` header. Before
+  Phase 5 is deployed, or for any request that reaches the app directly, entries fall back to
+  `unauthenticated@<ip>` — expected, since there's genuinely no verified identity yet.
 
 ### Reviewed as part of this work — no issues found
 - **SQL injection**: every query in `assets_db.py` (both SQLite and Postgres paths) uses
@@ -229,27 +300,34 @@ Stop-ScheduledTask -TaskName 'AD-Agent-WebUI'; Start-ScheduledTask -TaskName 'AD
   clear across the network, and restricting the Postgres server's own firewall/`pg_hba.conf` to
   only accept connections from Jump-Jeremy's IP. If Postgres runs on the same server as the web
   UI (`localhost`), none of this cross-host risk applies and `sslmode` can be left at its default.
-- **`/healthz` info disclosure**: it's unauthenticated (same as everything else) and returns
-  internal detail strings (e.g. exception text, disk paths) on failure. Low severity — no
-  credentials or scan data are ever included — but once you add the reverse-proxy auth layer
-  above, `/healthz` gets covered by it too.
+- **`/healthz` info disclosure**: unauthenticated today and returns internal detail strings (e.g.
+  exception text, disk paths) on failure. Low severity — no credentials or scan data are ever
+  included — but once Phase 5's IIS proxy is in front, `/healthz` is covered by Windows Auth too.
+- **IIS reverse proxy itself (Phase 5)**: the URL Rewrite rule forwards the Windows-Auth-verified
+  username via a custom `X-Remote-User` header, which only IIS can set on this path since the
+  Flask app is locked to `127.0.0.1` afterward (`-LockWebUIToLocalhost`) — nothing else on the
+  network can reach port 5000 directly to spoof that header. If you skip
+  `-LockWebUIToLocalhost`, port 5000 stays reachable from the network and someone could bypass IIS
+  entirely and set their own `X-Remote-User` header talking to Flask directly — so treat
+  `-LockWebUIToLocalhost` as required, not optional, once you deploy Phase 5.
 
 ---
 
 ## Firewall impact — what's actually new
 
-**Short answer: nothing, for Phases 1-3.** They're all local to the jump server (loopback health
-checks, a local binary, an in-process thread pool) and don't open or require any new ports.
+**Nothing for Phases 1-3.** They're all local to the jump server (loopback health checks, a local
+binary, an in-process thread pool) and don't open or require any new ports.
 
-**Phase 4 (Postgres) is the only one with a firewall implication, and only if you host the
-database on a separate server:**
+| Phase | Source | Destination | Port | Reason |
+|---|---|---|---|---|
+| 4 (optional) | Jump server | Postgres server | TCP/5432 | Asset store queries, only if `ASSETS_DATABASE_URL` points at a remote host (loopback if Postgres runs on the jump server itself) |
+| 5 (optional) | Analyst workstations | Jump server (IIS) | TCP/443 | Replaces direct TCP/5000 access once deployed — see below |
 
-| Source | Destination | Port | Reason |
-|---|---|---|---|
-| Jump server (Jump-Jeremy) | Postgres server | TCP/5432 | Asset store queries, if `ASSETS_DATABASE_URL` points at a remote host |
-
-If Postgres runs on Jump-Jeremy itself (`localhost` in the connection string), this is a loopback
-connection and needs no firewall change at all.
+**Phase 5 changes an existing rule rather than adding one:** once deployed with
+`-LockWebUIToLocalhost`, port 5000 is no longer reachable from the network at all — only IIS on
+443 is. `firewall-request-ports.csv` row 20 has been updated to reflect analysts hitting 443
+(IIS) instead of 5000 (Flask directly); no new port is opened, an existing one is effectively
+replaced.
 
 This has been added to `firewall-request-ports.csv` as row 21, marked optional/Phase-4-only, so
 it's ready to hand to your network team alongside the existing list if and when you deploy

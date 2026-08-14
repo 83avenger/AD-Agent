@@ -218,6 +218,21 @@ variable unset and nothing changes; this is purely additive. Both backends use t
 dedup/upsert semantics (stable dedup key, IP→hostname promotion, never-delete-on-sync), so
 switching doesn't change how deduplication behaves, only where the data lives.
 
+**Authentication (recommended before exposing this beyond your own testing):** the web UI has no
+built-in login — anyone who can reach its port can trigger scans, delete assets, and view
+everything collected. `DCAnomalyAgent\Install\Register-IISReverseProxy.ps1` fronts it with IIS
+doing TLS termination + Windows Authentication, restricted to an AD group of your choosing, and
+forwards the authenticated username to the app so `WebApp\State\audit.log` records who ran what.
+It doesn't change the Flask app itself - IIS proxies to it over localhost. See its `-AllowedGroup`
+and `-LockWebUIToLocalhost` parameters, and test in a lab before running against a production
+jump server:
+
+```powershell
+cd DCAnomalyAgent\Install
+.\Register-IISReverseProxy.ps1 -AllowedGroup 'CONTOSO\AD-Agent-Analysts' `
+    -LockWebUIToLocalhost -GmsaAccount 'CONTOSO\svc-discoverAgt$' -PythonPath 'C:\Apps\Python312\python.exe'
+```
+
 This drops `netscan.exe` into `DCAnomalyAgent\bin\`. `Get-NetworkAsset` checks for it
 automatically on every Discovery run and uses it when present; if it's ever missing, fails to
 run, or produces bad output, Discovery logs a warning and transparently falls back to the
