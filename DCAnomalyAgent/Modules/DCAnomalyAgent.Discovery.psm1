@@ -137,6 +137,53 @@ function Expand-Cidr {
     }
 }
 
+function Invoke-NetscanBinary {
+    <#
+    .SYNOPSIS
+        Runs the compiled Go accelerator (tools/netscan) if present, translating its JSON
+        output into the same object shape Get-NetworkAsset's PowerShell scanner produces.
+    .DESCRIPTION
+        This is an optional accelerator, not a hard dependency: ForEach-Object -Parallel
+        has real limitations for this workload (no -ArgumentList with -Parallel, module
+        functions don't cross the runspace boundary, meaningful per-runspace overhead at
+        thousands of hosts), and a single Go process with goroutines has none of that. If
+        the binary isn't present, isn't executable, or fails for any reason, this returns
+        $null and Get-NetworkAsset transparently falls back to the pure-PowerShell scanner
+        below - so a server that hasn't had the binary deployed yet, or where it can't run
+        for some EDR-related reason, keeps working exactly as it did before this existed.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string[]]$Cidr,
+        [int]$TimeoutMs,
+        [string]$SourceLabel,
+        [hashtable]$ScanPorts
+    )
+
+    $exeName = if ($IsWindows -or $PSVersionTable.PSVersion.Major -le 5) { 'netscan.exe' } else { 'netscan' }
+    $binPath = Join-Path $PSScriptRoot "..\bin\$exeName"
+    if (-not (Test-Path $binPath)) { return $null }
+
+    try {
+        $cidrArg  = ($Cidr -join ',')
+        $portsArg = (($ScanPorts.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join ',')
+
+        $output = & $binPath -cidr $cidrArg -ports $portsArg -timeout-ms $TimeoutMs -source $SourceLabel 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "netscan accelerator exited $LASTEXITCODE - falling back to PowerShell scanner. Output: $output"
+            return $null
+        }
+
+        $parsed = $output -join "`n" | ConvertFrom-Json -ErrorAction Stop
+        # ConvertFrom-Json returns a single object (not an array) for a 1-element JSON
+        # array in some PS versions - normalize to an array either way.
+        return @($parsed)
+    } catch {
+        Write-Warning "netscan accelerator failed ($_) - falling back to PowerShell scanner."
+        return $null
+    }
+}
+
 function Get-NetworkAsset {
     <#
     .SYNOPSIS
@@ -168,8 +215,16 @@ function Get-NetworkAsset {
         [hashtable]$ScanPorts = @{
             SMB = 445; WinRM = 5985; RPC = 135; SSH = 22; LDAP = 389
             Kerberos = 88; SNMP = 161; Telnet = 23; HTTPS = 443
-        }
+        },
+        # Set $false to force the pure-PowerShell scanner even if the accelerator binary
+        # is present - mainly for testing/comparison.
+        [bool]$UseNativeAccelerator = $true
     )
+
+    if ($UseNativeAccelerator) {
+        $result = Invoke-NetscanBinary -Cidr $Cidr -TimeoutMs $TimeoutMs -SourceLabel $SourceLabel -ScanPorts $ScanPorts
+        if ($null -ne $result) { return $result }
+    }
 
     $ips = foreach ($c in $Cidr) { Expand-Cidr -Cidr $c }
 

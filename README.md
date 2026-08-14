@@ -190,6 +190,24 @@ down, hung, or reporting a hard failure two checks in a row:
 This registers a second Scheduled Task (`AD-Agent-WebUI-Watchdog`) that runs every 5 minutes and
 logs its activity to `DCAnomalyAgent\State\watchdog.log`.
 
+**Network scan accelerator (optional):** `Get-NetworkAsset`'s built-in PowerShell scanner works
+fine, but `tools/netscan/` has a small Go rewrite of the same port-probe logic that's meaningfully
+faster at scale and sidesteps a few real `ForEach-Object -Parallel` limitations this codebase hit
+(no `-ArgumentList` support, module functions not crossing the runspace boundary). It's optional -
+if Go isn't installed, skip this entirely and Discovery keeps using the PowerShell scanner as
+before. To use it: install Go once (https://go.dev/dl/), then build the binary:
+
+```powershell
+cd tools\netscan
+.\build.ps1
+```
+
+This drops `netscan.exe` into `DCAnomalyAgent\bin\`. `Get-NetworkAsset` checks for it
+automatically on every Discovery run and uses it when present; if it's ever missing, fails to
+run, or produces bad output, Discovery logs a warning and transparently falls back to the
+PowerShell scanner - no configuration needed either way. Re-run `build.ps1` after pulling source
+changes to `tools/netscan/`.
+
 ---
 
 ## Supported asset types

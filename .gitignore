@@ -7,6 +7,7 @@ DCAnomalyAgent/State/*.db-shm
 # Vendor/API secrets saved from the web UI's Integrations pages - never commit these.
 DCAnomalyAgent/Config/integration-secrets.json
 WebApp/reports/
+DCAnomalyAgent/bin/
 WebApp/__pycache__/
 WebApp/*.pyc
 *.pyc
