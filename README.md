@@ -202,6 +202,22 @@ cd tools\netscan
 .\build.ps1
 ```
 
+**Asset store backend (optional):** the discovered-assets store (`WebApp/assets_db.py`) defaults
+to SQLite at `DCAnomalyAgent\State\assets.db` — no setup needed, and fine for a single server up
+to a few thousand assets. If you outgrow that (3000+ assets, or multiple AD-Agent instances/sites
+needing a shared view), point it at PostgreSQL instead:
+
+```powershell
+pip install psycopg2-binary
+$env:ASSETS_DATABASE_URL = 'postgresql://ad_agent:secret@pgserver.contoso.com:5432/ad_agent'
+```
+
+Set that environment variable wherever the web UI's Scheduled Task runs (or in `start.py`'s
+environment) and restart it — the table is created automatically on first connection. Leave the
+variable unset and nothing changes; this is purely additive. Both backends use the exact same
+dedup/upsert semantics (stable dedup key, IP→hostname promotion, never-delete-on-sync), so
+switching doesn't change how deduplication behaves, only where the data lives.
+
 This drops `netscan.exe` into `DCAnomalyAgent\bin\`. `Get-NetworkAsset` checks for it
 automatically on every Discovery run and uses it when present; if it's ever missing, fails to
 run, or produces bad output, Discovery logs a warning and transparently falls back to the
