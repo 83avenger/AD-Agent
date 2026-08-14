@@ -19,3 +19,4 @@ S.No,Source IP,Source Description,Destination IP,Destination Description,Service
 18,<Jump Server IP>,AD-Agent jump server,<tenant>.webhook.office.com,Teams incoming webhook (optional),TCP/443,Teams alert delivery; disable via Reporting.Teams.Enabled = $false
 19,<Jump Server IP>,AD-Agent jump server,<SMTP relay IP/hostname>,Email relay (optional),TCP/587 (or relay's port),Email alert delivery; disable via Reporting.Email.Enabled = $false
 20,<Analyst workstation IPs/subnet>,"Analysts viewing the dashboard (optional, inbound)",<Jump Server IP>,AD-Agent jump server,TCP/5000,Web UI + rotating dashboard - front with a reverse proxy; no built-in auth
+21,<Jump Server IP>,AD-Agent jump server,<Postgres server IP>,PostgreSQL asset store (optional - Phase 4 only),TCP/5432,"Only needed if ASSETS_DATABASE_URL points at a Postgres host separate from the jump server; not required if Postgres runs on the jump server itself (localhost) or if you stay on the default SQLite store"
