@@ -176,6 +176,20 @@ cd DCAnomalyAgent\Install
 .\Register-WebUIStartup.ps1 -GmsaAccount 'CONTOSO\svc-discoverAgt$' -PythonPath 'C:\Apps\Python312\python.exe'
 ```
 
+**Self-healing:** the web UI exposes `GET /healthz` (checks: state directory writable, SQLite
+asset DB reachable, PowerShell available, disk space, staleness of the last scan/discovery run).
+`Register-WebUIStartup.ps1`'s Scheduled Task already restarts the process if it crashes outright,
+but that alone won't catch a *hung* process that's still running but no longer answering requests.
+Register the watchdog to cover that case too - it polls `/healthz` and restarts the task if it's
+down, hung, or reporting a hard failure two checks in a row:
+
+```powershell
+.\Watch-WebUIHealth.ps1 -Register -GmsaAccount 'CONTOSO\svc-discoverAgt$'
+```
+
+This registers a second Scheduled Task (`AD-Agent-WebUI-Watchdog`) that runs every 5 minutes and
+logs its activity to `DCAnomalyAgent\State\watchdog.log`.
+
 ---
 
 ## Supported asset types

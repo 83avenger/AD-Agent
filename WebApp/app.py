@@ -720,6 +720,106 @@ def _dashboard_payload() -> dict:
     }
 
 
+def _healthz_checks() -> dict:
+    """Cheap, dependency-free self-checks a watchdog can poll without shelling
+    out to PowerShell. Each check reports ok/warn/fail independently so a
+    watchdog (or you, reading /healthz by hand) can tell exactly what's wrong
+    rather than getting a single opaque up/down bit."""
+    checks = {}
+
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        probe = STATE_DIR / ".healthz-write-probe"
+        probe.write_text(datetime.utcnow().isoformat())
+        probe.unlink()
+        checks["state_dir_writable"] = {"status": "ok"}
+    except OSError as exc:
+        checks["state_dir_writable"] = {"status": "fail", "detail": str(exc)}
+
+    try:
+        conn = _get_assets_db()
+        try:
+            conn.execute("SELECT COUNT(*) FROM assets").fetchone()
+        finally:
+            conn.close()
+        checks["assets_db"] = {"status": "ok"}
+    except sqlite3.Error as exc:
+        checks["assets_db"] = {"status": "fail", "detail": str(exc)}
+
+    ps = _detect_powershell()
+    checks["powershell"] = (
+        {"status": "ok", "detail": ps} if ps else {"status": "fail", "detail": "neither pwsh nor powershell found on PATH"}
+    )
+
+    try:
+        free_gb = os.statvfs(STATE_DIR).f_bavail * os.statvfs(STATE_DIR).f_frsize / (1024 ** 3) \
+            if hasattr(os, "statvfs") else None
+    except OSError:
+        free_gb = None
+    if free_gb is None:
+        import shutil
+        try:
+            free_gb = shutil.disk_usage(STATE_DIR).free / (1024 ** 3)
+        except OSError:
+            free_gb = None
+    if free_gb is None:
+        checks["disk_space"] = {"status": "warn", "detail": "could not determine free space"}
+    elif free_gb < 1:
+        checks["disk_space"] = {"status": "fail", "detail": f"{free_gb:.2f} GB free"}
+    elif free_gb < 5:
+        checks["disk_space"] = {"status": "warn", "detail": f"{free_gb:.2f} GB free"}
+    else:
+        checks["disk_space"] = {"status": "ok", "detail": f"{free_gb:.2f} GB free"}
+
+    def _age_hours(path: Path) -> float | None:
+        try:
+            return (datetime.utcnow().timestamp() - path.stat().st_mtime) / 3600
+        except OSError:
+            return None
+
+    scan_age = _age_hours(SNAPSHOT_PATH)
+    if scan_age is None:
+        checks["last_scan"] = {"status": "warn", "detail": "no scan has run yet"}
+    elif scan_age > 48:
+        checks["last_scan"] = {"status": "warn", "detail": f"{scan_age:.1f}h since last scan"}
+    else:
+        checks["last_scan"] = {"status": "ok", "detail": f"{scan_age:.1f}h since last scan"}
+
+    disc_age = _age_hours(DISCOVERY_INVENTORY_PATH)
+    if disc_age is None:
+        checks["last_discovery"] = {"status": "warn", "detail": "no discovery run has happened yet"}
+    elif disc_age > 48:
+        checks["last_discovery"] = {"status": "warn", "detail": f"{disc_age:.1f}h since last discovery"}
+    else:
+        checks["last_discovery"] = {"status": "ok", "detail": f"{disc_age:.1f}h since last discovery"}
+
+    return checks
+
+
+@app.route("/healthz")
+def healthz():
+    """Machine-readable liveness/readiness endpoint for a watchdog (see
+    DCAnomalyAgent/Install/Watch-WebUIHealth.ps1) or any external monitor to
+    poll. 200 = healthy or degraded-but-serving; 503 = a hard failure a
+    watchdog should act on (restart the service). This intentionally never
+    shells out to PowerShell itself, so it stays fast and reliable even if a
+    PowerShell invocation elsewhere is hung."""
+    checks = _healthz_checks()
+    statuses = [c["status"] for c in checks.values()]
+    if "fail" in statuses:
+        overall = "fail"
+    elif "warn" in statuses:
+        overall = "warn"
+    else:
+        overall = "ok"
+    body = {
+        "status": overall,
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "checks": checks,
+    }
+    return jsonify(body), (503 if overall == "fail" else 200)
+
+
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @app.route("/")
