@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}Running… — DC Anomaly Agent{% endblock %}
+
+{% block content %}
+<div class="card" style="max-width:520px; margin:3rem auto; text-align:center;">
+  <div style="display:flex; justify-content:center; margin-bottom:1rem;">
+    <div style="width:40px; height:40px; border:3px solid var(--border); border-top-color:var(--accent);
+      border-radius:50%; animation:spin 0.8s linear infinite;"></div>
+  </div>
+  <h2 style="font-size:1.15rem; font-weight:700; color:var(--brand-dark); margin-bottom:.4rem;">
+    {{ 'Running scan…' if kind == 'scan' else 'Running discovery…' }}
+  </h2>
+  <p style="color:var(--muted); font-size:.9rem;">
+    This can take a few minutes against many hosts. This page updates on its own — no need to
+    reload or leave it open in another tab.
+  </p>
+  <p id="jobError" style="color:var(--critical); font-size:.85rem; margin-top:1rem; display:none;"></p>
+</div>
+
+<style>
+@keyframes spin { to { transform: rotate(360deg); } }
+</style>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  const jobId = {{ job_id | tojson }};
+  const poll = () => {
+    fetch('/jobs/' + jobId)
+      .then(r => r.json())
+      .then(data => {
+        if (data.status === 'done' || data.status === 'error' || data.status === 'not_found') {
+          window.location.href = '/jobs/' + jobId + '/result';
+          return;
+        }
+        setTimeout(poll, 2000);
+      })
+      .catch(() => setTimeout(poll, 3000));
+  };
+  setTimeout(poll, 1500);
+})();
+</script>
+{% endblock %}

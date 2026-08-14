@@ -11,6 +11,10 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
+import time
+import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
@@ -62,6 +66,62 @@ SEV_RANK = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3}
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET", os.urandom(24))
+
+# ── Background job queue ────────────────────────────────────────────────────
+# Scans/discovery runs shell out to PowerShell and can take minutes against
+# many hosts. Running them synchronously inside a Flask request thread blocks
+# that worker for the whole duration - fine for one person testing, but not
+# for multiple people using the UI at once, and it leaves the browser with no
+# feedback beyond a spinning tab for however long the PowerShell process
+# takes. Jobs run on a small thread pool instead; the submitting request gets
+# a job id back immediately and the UI polls /jobs/<id> for status.
+_jobs: dict[str, dict] = {}
+_jobs_lock = threading.Lock()
+_executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="adagent-job")
+_JOB_RETENTION_SEC = 3600  # finished jobs are kept this long so a late poll/refresh still works
+
+
+def _submit_job(kind: str, fn, *args, **kwargs) -> str:
+    job_id = uuid.uuid4().hex
+    with _jobs_lock:
+        _jobs[job_id] = {
+            "kind": kind,
+            "status": "running",
+            "started_at": time.time(),
+            "finished_at": None,
+            "result": None,
+            "error": None,
+        }
+        # Opportunistic cleanup of old finished jobs - keeps _jobs from growing
+        # unbounded on a long-lived process without needing a separate timer.
+        stale = [
+            jid for jid, j in _jobs.items()
+            if j["finished_at"] and (time.time() - j["finished_at"]) > _JOB_RETENTION_SEC
+        ]
+        for jid in stale:
+            del _jobs[jid]
+
+    def _run():
+        try:
+            result = fn(*args, **kwargs)
+            with _jobs_lock:
+                _jobs[job_id]["status"] = "done"
+                _jobs[job_id]["result"] = result
+                _jobs[job_id]["finished_at"] = time.time()
+        except Exception as exc:  # noqa: BLE001 - report to the polling UI, don't crash the pool
+            with _jobs_lock:
+                _jobs[job_id]["status"] = "error"
+                _jobs[job_id]["error"] = str(exc)
+                _jobs[job_id]["finished_at"] = time.time()
+
+    _executor.submit(_run)
+    return job_id
+
+
+def _get_job(job_id: str) -> dict | None:
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+        return dict(job) if job else None
 
 
 def _detect_powershell() -> str:
@@ -1136,22 +1196,19 @@ def discovery_run():
         return render_template("index.html", error="Discovery needs at least one target: check "
                                 "“From Active Directory” or enter a CIDR range.")
 
+    job_id = _submit_job(
+        "discovery", _discovery_job, from_ad, cidr, warp_cidr, skip_categorize, skip_software
+    )
+    return render_template("job_wait.html", job_id=job_id, kind="discovery")
+
+
+def _discovery_job(from_ad, cidr, warp_cidr, skip_categorize, skip_software) -> dict:
+    """Runs on the job thread pool - see _submit_job. Must not touch the Flask
+    session or request context (neither exist off the request thread)."""
     result, err = _run_discovery(from_ad, cidr, warp_cidr, skip_categorize, skip_software)
     if err:
-        return render_template("index.html", error=f"Discovery failed: {err}")
-
-    by_type: dict = {}
-    for a in (result.get("Inventory") or []):
-        t = a.get("AssetType", "Unknown")
-        by_type[t] = by_type.get(t, 0) + 1
-
-    return render_template(
-        "index.html",
-        discovery_summary={
-            "count": result.get("Count", 0),
-            "by_type": sorted(by_type.items(), key=lambda kv: -kv[1]),
-        },
-    )
+        raise RuntimeError(err)
+    return {"result": result}
 
 
 @app.route("/scan", methods=["POST"])
@@ -1168,6 +1225,13 @@ def scan():
     if not scan_types:
         scan_types = ["anomaly"]
 
+    job_id = _submit_job("scan", _scan_job, dcs, scan_types, frameworks, severities)
+    return render_template("job_wait.html", job_id=job_id, kind="scan")
+
+
+def _scan_job(dcs, scan_types, frameworks, severities) -> dict:
+    """Runs on the job thread pool - see _submit_job. Must not touch the Flask
+    session or request context (neither exist off the request thread)."""
     pwsh = _detect_powershell()
     if not pwsh:
         result = _mock_result(dcs)
@@ -1175,10 +1239,21 @@ def scan():
     else:
         result, err = _run_scan(dcs, scan_types, frameworks, severities)
         if result is None:
-            return render_template("index.html", error=f"Scan failed: {err}", scan_config={
-                "dcs": dcs, "scan_types": scan_types, "frameworks": frameworks, "severities": severities,
-            })
+            raise RuntimeError(err or "unknown error")
         demo = False
+    return {
+        "result": result, "demo": demo, "dcs": dcs,
+        "scan_types": scan_types, "frameworks": frameworks, "severities": severities,
+    }
+
+
+def _render_scan_result(data: dict):
+    result     = data["result"]
+    dcs        = data["dcs"]
+    scan_types = data["scan_types"]
+    frameworks = data["frameworks"]
+    severities = data["severities"]
+    demo       = data["demo"]
 
     # Persist in session so download endpoints can regenerate from it
     session["last_result"] = json.dumps(result)
@@ -1209,6 +1284,47 @@ def scan():
         severities = severities,
         demo       = demo,
     )
+
+
+def _render_discovery_result(data: dict):
+    result = data["result"]
+    by_type: dict = {}
+    for a in (result.get("Inventory") or []):
+        t = a.get("AssetType", "Unknown")
+        by_type[t] = by_type.get(t, 0) + 1
+    return render_template(
+        "index.html",
+        discovery_summary={
+            "count": result.get("Count", 0),
+            "by_type": sorted(by_type.items(), key=lambda kv: -kv[1]),
+        },
+    )
+
+
+@app.route("/jobs/<job_id>")
+def job_status(job_id):
+    """Polled by job_wait.html every couple seconds. Kept intentionally tiny -
+    just enough for the UI to know whether to keep waiting, redirect to the
+    result, or show an error."""
+    job = _get_job(job_id)
+    if not job:
+        return jsonify({"status": "not_found"}), 404
+    return jsonify({"status": job["status"], "kind": job["kind"], "error": job["error"]})
+
+
+@app.route("/jobs/<job_id>/result")
+def job_result(job_id):
+    job = _get_job(job_id)
+    if not job:
+        return render_template("index.html", error="That job has expired or the server restarted. Please run the scan again."), 404
+    if job["status"] == "running":
+        return render_template("job_wait.html", job_id=job_id, kind=job["kind"])
+    if job["status"] == "error":
+        label = "Scan" if job["kind"] == "scan" else "Discovery"
+        return render_template("index.html", error=f"{label} failed: {job['error']}")
+    if job["kind"] == "scan":
+        return _render_scan_result(job["result"])
+    return _render_discovery_result(job["result"])
 
 
 @app.route("/download/pdf")
