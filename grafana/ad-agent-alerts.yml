@@ -1,0 +1,72 @@
+# Prometheus alerting rules for AD-Agent's exported metrics (see WebApp/app.py's /metrics
+# route). These are the AD-specific checks Prometheus itself has no built-in notion of -
+# it just fires generic alerts on whatever numbers we expose. Load into Prometheus via
+# rule_files in prometheus.yml, or import into Grafana's own alerting if you'd rather
+# manage rules there instead of Prometheus's.
+#
+# Validate with: promtool check rules ad-agent-alerts.yml
+groups:
+  - name: ad-agent-security
+    rules:
+      - alert: ADAgentCriticalAnomaly
+        expr: adagent_findings_by_severity{severity="Critical"} > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "AD-Agent found {{ $value }} Critical-severity finding(s)"
+          description: "Check the AD-Agent dashboard - a Critical anomaly, compliance gap, expiring certificate, or zero-day match was found in the last scan."
+
+      - alert: ADAgentZeroDayExposure
+        expr: adagent_zerodays > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $value }} installed software match(es) against the CISA KEV catalog"
+          description: "Actively exploited vulnerability signatures found on scanned hosts - see the Software List page for affected devices."
+
+      - alert: ADAgentComplianceScoreLow
+        expr: adagent_compliance_score_percent < 70
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Compliance score is {{ $value }}% (below 70%)"
+          description: "Review compliance gaps on the AD-Agent dashboard."
+
+      - alert: ADAgentCertificateExpiringUrgent
+        expr: adagent_certificates_urgent > 0
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value }} certificate(s) expiring within 30 days"
+          description: "Check the Certificates panel on the AD-Agent dashboard before they lapse."
+
+      - alert: ADAgentDiscoveryStale
+        expr: (time() - adagent_discovery_last_scan_timestamp_seconds) > 172800
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "No Discovery run in over 48 hours"
+          description: "The asset inventory hasn't refreshed - check the AD-Agent-Scan-Discovery Scheduled Task on the jump server."
+
+      - alert: ADAgentHealthCheckFailing
+        expr: adagent_health_check == 0
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "AD-Agent self-health check '{{ $labels.check }}' is failing"
+          description: "See /healthz on the jump server for detail. The watchdog (Watch-WebUIHealth.ps1) should already be attempting remediation for a hung/crashed process - this alert covers everything else it can't fix on its own (disk space, PowerShell missing, DB unreachable)."
+
+      - alert: ADAgentScrapeDown
+        expr: up{job="adagent"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Prometheus can't scrape AD-Agent's /metrics endpoint"
+          description: "The web UI may be down - check Watch-WebUIHealth.ps1's log and the AD-Agent-WebUI Scheduled Task state."

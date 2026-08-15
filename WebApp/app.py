@@ -809,6 +809,114 @@ def api_dashboard():
     return jsonify(_dashboard_payload())
 
 
+def _prometheus_escape(value: str) -> str:
+    return str(value).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+
+def _prom_metric(lines: list, name: str, mtype: str, help_text: str, samples: list) -> None:
+    """Appends one metric family (HELP/TYPE header + samples) in Prometheus text
+    exposition format. samples is a list of (labels_dict, value) tuples."""
+    lines.append(f"# HELP {name} {help_text}")
+    lines.append(f"# TYPE {name} {mtype}")
+    for labels, value in samples:
+        if labels:
+            label_str = ",".join(f'{k}="{_prometheus_escape(v)}"' for k, v in labels.items())
+            lines.append(f"{name}{{{label_str}}} {value}")
+        else:
+            lines.append(f"{name} {value}")
+
+
+@app.route("/metrics")
+def metrics():
+    """Prometheus exposition-format endpoint - the AD-specific "checks" Prometheus itself
+    has no notion of (compliance gaps, AD anomalies, cert expiry, KEV exposure, discovery
+    freshness) turned into scrapeable time series. Point a Prometheus scrape config at this
+    URL and the accompanying grafana/ad-agent-dashboard.json for ready-made panels/alerts -
+    see /prometheus-comparison for the full writeup of why this exists alongside, not
+    instead of, this app's own dashboard.
+
+    Unauthenticated today, same as every other route - once Register-IISReverseProxy.ps1
+    (Phase 5) is deployed, either put this behind it too or scope a separate unauthenticated
+    path for just this route in the IIS config, since Prometheus scrapers don't do
+    interactive Windows Authentication. A shared-secret query param or IP allowlist in IIS
+    for the Prometheus server's own IP is the usual compromise."""
+    payload = _dashboard_payload()
+    lines: list = []
+
+    _prom_metric(lines, "adagent_up", "gauge",
+                 "Whether the AD-Agent web UI is up and this scrape succeeded (always 1 if reached).",
+                 [({}, 1)])
+    _prom_metric(lines, "adagent_demo_mode", "gauge",
+                 "1 if the last scan snapshot is demo/mock data (no PowerShell available), 0 for a real scan.",
+                 [({}, 1 if payload["demo"] else 0)])
+
+    # Note: these are point-in-time snapshots re-evaluated from the last scan on every
+    # scrape, not monotonically increasing counters - so per Prometheus naming convention
+    # (https://prometheus.io/docs/practices/naming/) they're gauges without a "_total"
+    # suffix, even though "total X findings" is how a human would phrase them. promtool
+    # check metrics was run against this endpoint's actual output to confirm.
+    kpi = payload["kpi"]
+    _prom_metric(lines, "adagent_anomalies", "gauge", "AD anomalies found in the last scan.",
+                 [({}, kpi["anomalies"])])
+    _prom_metric(lines, "adagent_compliance_score_percent", "gauge",
+                 "Overall compliance score (0-100) from the last scan.", [({}, kpi["compliance_score"])])
+    _prom_metric(lines, "adagent_compliance_controls_passed", "gauge",
+                 "Compliance controls passed in the last scan.", [({}, kpi["compliance_passed"])])
+    _prom_metric(lines, "adagent_compliance_controls", "gauge",
+                 "Compliance controls evaluated in the last scan.", [({}, kpi["compliance_total"])])
+    _prom_metric(lines, "adagent_zerodays", "gauge",
+                 "CISA KEV / zero-day matches against installed software.", [({}, kpi["zerodays"])])
+    _prom_metric(lines, "adagent_certificates_expiring", "gauge",
+                 "Certificates approaching expiry.", [({}, kpi["certs"])])
+    _prom_metric(lines, "adagent_certificates_urgent", "gauge",
+                 "Certificates expiring within 30 days.", [({}, kpi["certs_urgent"])])
+    _prom_metric(lines, "adagent_software_hosts", "gauge",
+                 "Hosts with software inventory collected.", [({}, kpi["software_hosts"])])
+    _prom_metric(lines, "adagent_software_vulnerable", "gauge",
+                 "Installed software matches against known-vulnerable versions.", [({}, kpi["software_vulnerable"])])
+
+    _prom_metric(lines, "adagent_findings_by_severity", "gauge",
+                 "Combined anomaly+compliance+cert+zero-day findings by severity.",
+                 [({"severity": sev}, count) for sev, count in payload["severity_totals"].items()])
+    _prom_metric(lines, "adagent_compliance_gaps_by_severity", "gauge",
+                 "Compliance gaps by severity.",
+                 [({"severity": sev}, count) for sev, count in payload["compliance"]["gaps_by_severity"].items()])
+    _prom_metric(lines, "adagent_certificates_by_severity", "gauge",
+                 "Expiring certificates by severity.",
+                 [({"severity": sev}, count) for sev, count in payload["certificates"]["by_severity"].items()])
+
+    disc = payload["discovery"]
+    _prom_metric(lines, "adagent_discovery_assets", "gauge",
+                 "Discovered assets by type.",
+                 [({"asset_type": t}, count) for t, count in disc["by_type"]])
+    _prom_metric(lines, "adagent_discovery_assets_online", "gauge",
+                 "Discovered assets currently online (seen within the online threshold).",
+                 [({}, disc["online"])])
+    _prom_metric(lines, "adagent_discovery_assets_by_source", "gauge",
+                 "Discovered assets by discovery source (AD, NetworkScan, Cloudflare WARP, ...).",
+                 [({"source": s}, count) for s, count in disc["by_source"]])
+    if disc["last_scan"]:
+        try:
+            ts = datetime.fromisoformat(disc["last_scan"]).timestamp()
+            _prom_metric(lines, "adagent_discovery_last_scan_timestamp_seconds", "gauge",
+                         "Unix timestamp of the last Discovery run - alert on this going stale rather than polling the UI.",
+                         [({}, ts)])
+        except ValueError:
+            pass
+
+    # Surfaces the exact same self-checks /healthz reports, as a 1/0 gauge per check -
+    # lets a Prometheus alert rule fire on "adagent_health_check == 0" instead of parsing
+    # JSON, and gives you the healthz history for free via Prometheus's own retention.
+    health_checks = _healthz_checks()
+    _prom_metric(lines, "adagent_health_check", "gauge",
+                 "Per-check health status (1 = ok, 0.5 = warn, 0 = fail) - see /healthz for detail text.",
+                 [({"check": name}, {"ok": 1, "warn": 0.5, "fail": 0}[c["status"]])
+                  for name, c in health_checks.items()])
+
+    body = "\n".join(lines) + "\n"
+    return Response(body, content_type="text/plain; version=0.0.4; charset=utf-8")
+
+
 @app.route("/api/discovery/asset/<path:name>")
 def api_discovery_asset(name: str):
     """Full detail (incl. installed software) for one discovered device, read fresh
@@ -988,6 +1096,71 @@ PDQ_EXCLUSIVES = [
     "Certificate expiry monitoring (stores, TLS endpoints, Enterprise CA)",
     "CISA KEV / NVD zero-day exposure cross-referenced against installed software",
 ]
+
+
+# ── Prometheus + Grafana comparison ──────────────────────────────────────────
+# Different category than PDQ (generic metrics/dashboard platform vs. a purpose-built AD
+# scanner), so this isn't a straight feature-parity checklist - it's "what does AD-Agent
+# need Prometheus+Grafana for, and what does Prometheus+Grafana need AD-Agent for."
+# "covered" here includes native AND covered-via-the-/metrics-integration - both are things
+# you can actually do today, just through different UIs.
+PROMETHEUS_COMPARISON = [
+    {"category": "Metrics Collection & Time-Series", "features": [
+        {"feature": "Point-in-time scan results", "status": "covered", "note": "Native - every scan snapshot"},
+        {"feature": "Long-term metric history/retention", "status": "covered", "note": "Via /metrics - Prometheus's own TSDB retains scrape history AD-Agent doesn't store itself"},
+        {"feature": "Ad-hoc querying across metrics (PromQL)", "status": "covered", "note": "Via /metrics - not something AD-Agent needs to build; Prometheus already does this well"},
+        {"feature": "Correlating AD findings with infra metrics (CPU/disk/network)", "status": "partial", "note": "Possible if you also run node_exporter alongside and join in Grafana - AD-Agent itself doesn't collect infra metrics, by design"},
+    ]},
+    {"category": "Dashboards & Visualization", "features": [
+        {"feature": "Prebuilt security posture dashboard", "status": "covered", "note": "Native rotating dashboard, no setup required"},
+        {"feature": "Fully customizable drag-and-drop dashboards", "status": "covered", "note": "Via grafana/ad-agent-dashboard.json - Grafana's panel editor is far more flexible than anything worth building natively here"},
+        {"feature": "Historical trend graphs (compliance score over months)", "status": "covered", "note": "Via /metrics + Grafana - AD-Agent's own dashboard only shows current state"},
+        {"feature": "Per-device drill-down", "status": "covered", "note": "Native only - Prometheus metrics here are fleet-level aggregates, not built for per-device browsing"},
+    ]},
+    {"category": "Alerting", "features": [
+        {"feature": "Email/Teams alerts on scan findings", "status": "covered", "note": "Native"},
+        {"feature": "Flexible routing (PagerDuty, Slack, on-call schedules, dedup/silence)", "status": "covered", "note": "Via grafana/ad-agent-alerts.yml + Alertmanager - not something worth re-building when Alertmanager already does it well"},
+        {"feature": "Alert on AD-Agent's own health (process down, hung, disk full)", "status": "covered", "note": "Native via the watchdog (Phase 1) AND via /metrics' adagent_health_check + the ADAgentHealthCheckFailing/ADAgentScrapeDown rules - belt and braces"},
+    ]},
+    {"category": "Deployment & Operations", "features": [
+        {"feature": "Self-healing (auto-restart on crash/hang)", "status": "covered", "note": "Native - Watch-WebUIHealth.ps1 (Phase 1); Prometheus/Grafana have no equivalent built in either"},
+        {"feature": "Zero-config single-binary/agent-based metrics", "status": "gap", "note": "Prometheus's exporter ecosystem (node_exporter, windows_exporter, etc.) is far more mature for generic infra metrics than anything AD-Agent should try to replicate"},
+    ]},
+]
+
+PROMETHEUS_EXCLUSIVES = [
+    "AD-specific security checks: privileged group changes, anomaly detection, GPO drift",
+    "CIS / NIST / ISO 27001 / HIPAA / OWASP compliance scanning with pass/fail evidence",
+    "Certificate expiry monitoring across stores, TLS endpoints, and Enterprise CA",
+    "CISA KEV / NVD zero-day exposure cross-referenced against installed software",
+    "Agentless AD/network discovery with dedup and staleness tracking",
+]
+
+PROMETHEUS_THEY_HAVE = [
+    "A massive, mature exporter ecosystem for generic infra metrics (nothing AD-specific)",
+    "Long-term time-series storage and PromQL - AD-Agent doesn't try to replace this, it feeds it",
+    "Industry-standard alert routing/dedup/on-call via Alertmanager",
+    "A dashboarding platform used far beyond security - infra, business metrics, everything",
+]
+
+
+@app.route("/prometheus-comparison")
+def prometheus_comparison():
+    counts = {"covered": 0, "partial": 0, "gap": 0}
+    for cat in PROMETHEUS_COMPARISON:
+        for item in cat["features"]:
+            counts[item["status"]] += 1
+    total = sum(counts.values())
+    pct = round((counts["covered"] + 0.5 * counts["partial"]) / total * 100) if total else 0
+    return render_template(
+        "prometheus_comparison.html",
+        categories=PROMETHEUS_COMPARISON,
+        exclusives=PROMETHEUS_EXCLUSIVES,
+        they_have=PROMETHEUS_THEY_HAVE,
+        counts=counts,
+        total=total,
+        pct=pct,
+    )
 
 
 @app.route("/pdq-comparison")

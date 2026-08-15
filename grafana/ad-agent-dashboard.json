@@ -1,0 +1,96 @@
+{
+  "title": "AD-Agent — AD Security Posture",
+  "uid": "ad-agent-posture",
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "1m",
+  "time": { "from": "now-7d", "to": "now" },
+  "panels": [
+    {
+      "id": 1, "title": "Compliance Score", "type": "gauge",
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 0 },
+      "targets": [{ "expr": "adagent_compliance_score_percent", "refId": "A" }],
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100,
+        "thresholds": { "mode": "absolute", "steps": [
+          { "color": "red", "value": null }, { "color": "orange", "value": 70 }, { "color": "green", "value": 90 }
+        ] } }, "overrides": [] }
+    },
+    {
+      "id": 2, "title": "Open Anomalies", "type": "stat",
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 0 },
+      "targets": [{ "expr": "adagent_anomalies", "refId": "A" }],
+      "fieldConfig": { "defaults": { "thresholds": { "mode": "absolute", "steps": [
+        { "color": "green", "value": null }, { "color": "orange", "value": 1 }, { "color": "red", "value": 5 }
+      ] } }, "overrides": [] }
+    },
+    {
+      "id": 3, "title": "Zero-Day / KEV Exposure", "type": "stat",
+      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 0 },
+      "targets": [{ "expr": "adagent_zerodays", "refId": "A" }],
+      "fieldConfig": { "defaults": { "thresholds": { "mode": "absolute", "steps": [
+        { "color": "green", "value": null }, { "color": "red", "value": 1 }
+      ] } }, "overrides": [] }
+    },
+    {
+      "id": 4, "title": "Certificates Expiring <30d", "type": "stat",
+      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 0 },
+      "targets": [{ "expr": "adagent_certificates_urgent", "refId": "A" }],
+      "fieldConfig": { "defaults": { "thresholds": { "mode": "absolute", "steps": [
+        { "color": "green", "value": null }, { "color": "orange", "value": 1 }, { "color": "red", "value": 3 }
+      ] } }, "overrides": [] }
+    },
+    {
+      "id": 5, "title": "Findings by Severity (over time)", "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+      "targets": [{ "expr": "adagent_findings_by_severity", "legendFormat": "{{severity}}", "refId": "A" }],
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 15 } }, "overrides": [
+        { "matcher": { "id": "byName", "options": "Critical" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }] },
+        { "matcher": { "id": "byName", "options": "High" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } }] },
+        { "matcher": { "id": "byName", "options": "Medium" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "yellow" } }] },
+        { "matcher": { "id": "byName", "options": "Low" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "blue" } }] }
+      ] }
+    },
+    {
+      "id": 6, "title": "Compliance Gaps by Severity (over time)", "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+      "targets": [{ "expr": "adagent_compliance_gaps_by_severity", "legendFormat": "{{severity}}", "refId": "A" }],
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 15 } }, "overrides": [] }
+    },
+    {
+      "id": 7, "title": "Discovered Assets by Type", "type": "piechart",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 14 },
+      "targets": [{ "expr": "adagent_discovery_assets", "legendFormat": "{{asset_type}}", "refId": "A" }]
+    },
+    {
+      "id": 8, "title": "Assets Online", "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 14 },
+      "targets": [{ "expr": "adagent_discovery_assets_online", "refId": "A" }]
+    },
+    {
+      "id": 9, "title": "Time Since Last Discovery Run", "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 14 },
+      "targets": [{ "expr": "time() - adagent_discovery_last_scan_timestamp_seconds", "refId": "A" }],
+      "fieldConfig": { "defaults": { "unit": "s", "thresholds": { "mode": "absolute", "steps": [
+        { "color": "green", "value": null }, { "color": "orange", "value": 86400 }, { "color": "red", "value": 172800 }
+      ] } }, "overrides": [] }
+    },
+    {
+      "id": 10, "title": "AD-Agent Self-Health Checks", "type": "table",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 14 },
+      "targets": [{ "expr": "adagent_health_check", "format": "table", "instant": true, "refId": "A" }],
+      "fieldConfig": { "defaults": { "custom": { "cellOptions": { "type": "color-background" } },
+        "thresholds": { "mode": "absolute", "steps": [
+          { "color": "red", "value": null }, { "color": "orange", "value": 0.5 }, { "color": "green", "value": 1 }
+        ] } }, "overrides": [] }
+    },
+    {
+      "id": 11, "title": "Vulnerable Software Installs", "type": "stat",
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 22 },
+      "targets": [{ "expr": "adagent_software_vulnerable", "refId": "A" }],
+      "fieldConfig": { "defaults": { "thresholds": { "mode": "absolute", "steps": [
+        { "color": "green", "value": null }, { "color": "red", "value": 1 }
+      ] } }, "overrides": [] }
+    }
+  ]
+}

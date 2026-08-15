@@ -1,0 +1,139 @@
+{% extends "base.html" %}
+{% block title %}AD-Agent vs Prometheus + Grafana{% endblock %}
+
+{% block extra_head %}
+<style>
+  /* Same dark navy/teal treatment as the PDQ comparison page, scoped locally. */
+  .pdq-wrap {
+    background: #16222b;
+    margin: 1.5rem -1.5rem -2rem;
+    padding: 2rem 1.5rem 3rem;
+    border-radius: 10px 10px 0 0;
+    color: #e7eef2;
+  }
+  .pdq-hero { text-align: center; padding: 1rem 0 2rem; }
+  .pdq-hero h1 { font-size: 1.9rem; font-weight: 800; color: #ffffff; letter-spacing: -.01em; }
+  .pdq-hero p { color: #9fb4bd; font-size: .92rem; margin-top: .5rem; max-width: 680px; margin-left: auto; margin-right: auto; }
+  .pdq-teal { color: #3dd6b0; }
+
+  .pdq-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
+  .pdq-kpi { background: #1d2e39; border: 1px solid #2a3f4b; border-radius: 10px; padding: 1.2rem; text-align: center; }
+  .pdq-kpi .n { font-size: 2.2rem; font-weight: 800; line-height: 1; }
+  .pdq-kpi .l { font-size: .76rem; color: #9fb4bd; margin-top: .4rem; text-transform: uppercase; letter-spacing: .04em; font-weight: 700; }
+  .pdq-kpi.big .n { color: #3dd6b0; }
+  .pdq-kpi.covered .n { color: #3dd6b0; }
+  .pdq-kpi.partial .n { color: #f0b429; }
+  .pdq-kpi.gap .n { color: #6b8290; }
+
+  .pdq-bar { height: 10px; border-radius: 6px; overflow: hidden; display: flex; background: #101a21; margin-bottom: 1.2rem; }
+  .pdq-bar span { height: 100%; }
+
+  .pdq-note { background: #1d2e39; border: 1px solid #2a3f4b; border-radius: 10px; padding: 1rem 1.2rem; margin-bottom: 2rem; font-size: .85rem; color: #cfe0e6; }
+  .pdq-note strong { color: #3dd6b0; }
+
+  .pdq-cat { background: #1d2e39; border: 1px solid #2a3f4b; border-radius: 10px; margin-bottom: 1.1rem; overflow: hidden; }
+  .pdq-cat-h { padding: .85rem 1.2rem; font-weight: 800; font-size: .92rem; background: #223541; color: #fff; letter-spacing: .01em; }
+  .pdq-row { display: grid; grid-template-columns: 28px 1fr auto; gap: .8rem; align-items: start; padding: .7rem 1.2rem; border-top: 1px solid #223541; }
+  .pdq-row .icon { font-weight: 800; font-size: .95rem; text-align: center; margin-top: .1rem; }
+  .pdq-row .icon.covered { color: #3dd6b0; }
+  .pdq-row .icon.partial { color: #f0b429; }
+  .pdq-row .icon.gap { color: #55707d; }
+  .pdq-row .ft { font-weight: 600; font-size: .88rem; }
+  .pdq-row .note { color: #8fa4ae; font-size: .78rem; margin-top: .15rem; }
+  .pdq-badge { font-size: .66rem; font-weight: 800; padding: .18rem .55rem; border-radius: 5px; text-transform: uppercase; letter-spacing: .04em; white-space: nowrap; }
+  .pdq-badge.covered { background: rgba(61,214,176,.15); color: #3dd6b0; }
+  .pdq-badge.partial { background: rgba(240,180,41,.15); color: #f0b429; }
+  .pdq-badge.gap { background: rgba(107,130,144,.18); color: #9fb4bd; }
+
+  .pdq-two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 1.2rem; margin-top: 2rem; }
+  @media (max-width: 720px) { .pdq-two-col { grid-template-columns: 1fr; } }
+  .pdq-exclusives { border-radius: 10px; padding: 1.3rem 1.4rem; }
+  .pdq-exclusives.mine { background: linear-gradient(135deg, #123330, #16222b); border: 1px solid #2a5f52; }
+  .pdq-exclusives.theirs { background: linear-gradient(135deg, #1c2a3a, #16222b); border: 1px solid #2a3f5f; }
+  .pdq-exclusives h3 { font-size: 1rem; font-weight: 800; margin-bottom: .3rem; }
+  .pdq-exclusives.mine h3 { color: #3dd6b0; }
+  .pdq-exclusives.theirs h3 { color: #5f9dd6; }
+  .pdq-exclusives p { color: #9fb4bd; font-size: .82rem; margin-bottom: .9rem; }
+  .pdq-exclusives ul { list-style: none; display: grid; gap: .5rem; }
+  .pdq-exclusives li { font-size: .85rem; color: #e7eef2; padding-left: 1.4rem; position: relative; }
+  .pdq-exclusives.mine li::before { content: "★"; position: absolute; left: 0; color: #3dd6b0; }
+  .pdq-exclusives.theirs li::before { content: "★"; position: absolute; left: 0; color: #5f9dd6; }
+
+  .pdq-setup { background: #1d2e39; border: 1px solid #2a3f4b; border-radius: 10px; padding: 1.3rem 1.4rem; margin-top: 2rem; }
+  .pdq-setup h3 { color: #fff; font-size: 1rem; font-weight: 800; margin-bottom: .6rem; }
+  .pdq-setup code { background: #101a21; color: #3dd6b0; padding: .15rem .4rem; border-radius: 4px; font-size: .82rem; }
+  .pdq-setup ol { margin-left: 1.2rem; color: #cfe0e6; font-size: .85rem; line-height: 1.9; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="pdq-wrap">
+  <div class="pdq-hero">
+    <h1>AD-Agent <span class="pdq-teal">+</span> Prometheus &amp; Grafana</h1>
+    <p>Not a replacement comparison — a different category. Prometheus/Grafana is a generic
+      metrics-and-dashboards platform with no idea what a GPO, a KEV entry, or a stale WinRM
+      cert is. AD-Agent is the other way around: deep AD/security domain knowledge, but no
+      interest in reinventing time-series storage or alert routing. AD-Agent's <code>/metrics</code>
+      endpoint exports its findings in Prometheus format so you can get both.</p>
+  </div>
+
+  <div class="pdq-kpis">
+    <div class="pdq-kpi big"><div class="n">{{ pct }}%</div><div class="l">Capabilities available (native or via /metrics)</div></div>
+    <div class="pdq-kpi covered"><div class="n">{{ counts.covered }}</div><div class="l">Covered</div></div>
+    <div class="pdq-kpi partial"><div class="n">{{ counts.partial }}</div><div class="l">Partial</div></div>
+    <div class="pdq-kpi gap"><div class="n">{{ counts.gap }}</div><div class="l">Gap</div></div>
+  </div>
+
+  <div class="pdq-bar">
+    <span style="width:{{ (counts.covered / total * 100) if total else 0 }}%; background:#3dd6b0;"></span>
+    <span style="width:{{ (counts.partial / total * 100) if total else 0 }}%; background:#f0b429;"></span>
+    <span style="width:{{ (counts.gap / total * 100) if total else 0 }}%; background:#3a4d59;"></span>
+  </div>
+
+  <div class="pdq-note">
+    <strong>Reading this table:</strong> "Covered" includes things AD-Agent's own dashboard
+    already does <em>and</em> things you get by pointing Prometheus at <code>/metrics</code> and
+    importing <code>grafana/ad-agent-dashboard.json</code> — both are real, usable today, just
+    through different UIs depending on what you're after.
+  </div>
+
+  {% for cat in categories %}
+  <div class="pdq-cat">
+    <div class="pdq-cat-h">{{ cat.category }}</div>
+    {% for item in cat.features %}
+    <div class="pdq-row">
+      <div class="icon {{ item.status }}">{% if item.status == 'covered' %}✓{% elif item.status == 'partial' %}◐{% else %}—{% endif %}</div>
+      <div>
+        <div class="ft">{{ item.feature }}</div>
+        {% if item.note %}<div class="note">{{ item.note }}</div>{% endif %}
+      </div>
+      <div><span class="pdq-badge {{ item.status }}">{{ item.status }}</span></div>
+    </div>
+    {% endfor %}
+  </div>
+  {% endfor %}
+
+  <div class="pdq-two-col">
+    <div class="pdq-exclusives mine">
+      <h3>★ Only AD-Agent does this</h3>
+      <p>No Prometheus exporter or Grafana panel replicates AD/security domain knowledge like this.</p>
+      <ul>{% for x in exclusives %}<li>{{ x }}</li>{% endfor %}</ul>
+    </div>
+    <div class="pdq-exclusives theirs">
+      <h3>★ Only Prometheus/Grafana does this</h3>
+      <p>Deliberately not rebuilt here — better to feed data into tools that already do this well.</p>
+      <ul>{% for x in they_have %}<li>{{ x }}</li>{% endfor %}</ul>
+    </div>
+  </div>
+
+  <div class="pdq-setup">
+    <h3>Wiring them together</h3>
+    <ol>
+      <li>Point a Prometheus scrape config at <code>http://&lt;jump-server&gt;:5000/metrics</code></li>
+      <li>Import <code>grafana/ad-agent-dashboard.json</code> into Grafana as a data source-linked dashboard</li>
+      <li>Load <code>grafana/ad-agent-alerts.yml</code> into Prometheus (<code>rule_files:</code> in <code>prometheus.yml</code>) for the prebuilt AD-specific alert rules</li>
+      <li>If Phase 5 (IIS reverse proxy) is deployed, allowlist the Prometheus server's IP for unauthenticated access to <code>/metrics</code> specifically — scrapers can't do interactive Windows Authentication</li>
+    </ol>
+  </div>
+</div>
+{% endblock %}

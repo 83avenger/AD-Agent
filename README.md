@@ -202,6 +202,12 @@ cd tools\netscan
 .\build.ps1
 ```
 
+This drops `netscan.exe` into `DCAnomalyAgent\bin\`. `Get-NetworkAsset` checks for it
+automatically on every Discovery run and uses it when present; if it's ever missing, fails to
+run, or produces bad output, Discovery logs a warning and transparently falls back to the
+PowerShell scanner - no configuration needed either way. Re-run `build.ps1` after pulling source
+changes to `tools/netscan/`.
+
 **Asset store backend (optional):** the discovered-assets store (`WebApp/assets_db.py`) defaults
 to SQLite at `DCAnomalyAgent\State\assets.db` — no setup needed, and fine for a single server up
 to a few thousand assets. If you outgrow that (3000+ assets, or multiple AD-Agent instances/sites
@@ -233,11 +239,13 @@ cd DCAnomalyAgent\Install
     -LockWebUIToLocalhost -GmsaAccount 'CONTOSO\svc-discoverAgt$' -PythonPath 'C:\Apps\Python312\python.exe'
 ```
 
-This drops `netscan.exe` into `DCAnomalyAgent\bin\`. `Get-NetworkAsset` checks for it
-automatically on every Discovery run and uses it when present; if it's ever missing, fails to
-run, or produces bad output, Discovery logs a warning and transparently falls back to the
-PowerShell scanner - no configuration needed either way. Re-run `build.ps1` after pulling source
-changes to `tools/netscan/`.
+**Metrics export & comparisons (optional):** `GET /metrics` exports scan findings, compliance
+score, discovery freshness, and AD-Agent's own `/healthz` checks in Prometheus format — point a
+Prometheus scrape config at it and import `grafana/ad-agent-dashboard.json` (panels) and
+`grafana/ad-agent-alerts.yml` (alert rules, `promtool check rules`-clean) for long-term trend
+graphs and flexible alert routing on top of AD-Agent's own dashboard. See the **vs Prometheus**
+page in the nav for the full breakdown of what's native vs. what needs this integration, and
+**vs PDQ** for the inventory-tool comparison.
 
 ---
 
