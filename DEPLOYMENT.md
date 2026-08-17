@@ -220,17 +220,113 @@ This creates:
 
 ---
 
+## 12. Updating the application
+
+This is the repeatable procedure for pulling in any future update — not just the current
+hardening batch. Same steps whether you're picking up a bug fix, a new feature, or one of the
+optional phases described in `ENTERPRISE-HARDENING-RUNBOOK.md`.
+
+### 12.1 Before you update
+
+- [ ] Check what's currently deployed, so you have a known-good point to roll back to:
+      ```powershell
+      cd C:\Apps\AD-Agent
+      git log -1 --oneline
+      ```
+      (If you deploy via file copy instead of git, keep a dated zip of the current
+      `C:\Apps\AD-Agent` folder instead — same purpose.)
+- [ ] Confirm no scan/discovery is actively running:
+      ```powershell
+      Get-ScheduledTask -TaskName 'DCAnomalyAgent-*' | Get-ScheduledTaskInfo | Where-Object State -eq 'Running'
+      ```
+      Recurring scans on their own schedule aren't affected by a web UI restart, but it's
+      cleaner to avoid updating mid-scan.
+- [ ] Note current `/healthz` output as a before/after baseline:
+      ```powershell
+      Invoke-WebRequest http://localhost:5000/healthz -UseBasicParsing | Select -Expand Content
+      ```
+
+### 12.2 Pull the update
+
+```powershell
+cd C:\Apps\AD-Agent
+git fetch origin
+git log HEAD..origin/<branch> --oneline   # preview what's changing before applying it
+git pull origin <branch>
+```
+
+If you deploy via file copy (no git on the server), replace only the files that changed —
+diff against your last-deployed copy, or just re-copy the whole tree if that's simpler for your
+process. Either way, **never edit deployed files directly on the server** — always update via a
+fresh pull/copy from the repo, so `git log` (or your zip archive) stays an honest record of
+what's actually running.
+
+### 12.3 Pick up dependency changes, if any
+
+Check whether `WebApp/requirements.txt` changed in this update:
+```powershell
+git diff HEAD@{1} HEAD -- WebApp/requirements.txt
+```
+If it did:
+```powershell
+cd C:\Apps\AD-Agent\WebApp
+.\.venv\Scripts\Activate.ps1   # if using a venv, per section 4
+pip install -r requirements.txt
+```
+Most updates won't touch this — PowerShell script/module changes and Python code changes don't
+need a dependency reinstall, only new third-party packages do.
+
+### 12.4 Restart what needs restarting
+
+| Component | Needs restart on update? | Command |
+|---|---|---|
+| Web UI (`app.py`, templates, `assets_db.py`) | Yes — Python doesn't hot-reload in `--prod` mode | `Stop-ScheduledTask -TaskName 'AD-Agent-WebUI'; Start-ScheduledTask -TaskName 'AD-Agent-WebUI'` |
+| Watchdog (`Watch-WebUIHealth.ps1`) | No — re-reads itself fresh on every scheduled fire | — |
+| Scan/Discovery PowerShell scripts & modules | No — re-read fresh on every scheduled run, nothing persists in memory between runs | — |
+| `settings.psd1` / other config | No — read fresh on every run/request | — |
+| `tools/netscan/main.go` | Only if that specific file changed | `cd tools\netscan; .\build.ps1` |
+
+In practice: **if `WebApp/` changed, restart the web UI task; otherwise you often don't need to
+restart anything** — the next scheduled scan or the next request just picks up the new script/
+config automatically.
+
+### 12.5 Verify
+
+```powershell
+Invoke-WebRequest http://localhost:5000/healthz -UseBasicParsing | Select -Expand Content
+```
+Compare against your 12.1 baseline — `status` should still be `ok` (or the same `warn` reasons
+as before, e.g. no scan run yet on a fresh install). Then exercise whatever the update actually
+changed — run a test scan, check the page/feature that was fixed or added, etc. Type-checking
+and a clean `/healthz` confirm the app didn't break; they don't confirm the specific feature
+works — verify that by hand.
+
+### 12.6 Rollback
+
+```powershell
+cd C:\Apps\AD-Agent
+git log --oneline -5           # find the commit hash noted in 12.1
+git checkout <previous-commit-hash>
+Stop-ScheduledTask -TaskName 'AD-Agent-WebUI'; Start-ScheduledTask -TaskName 'AD-Agent-WebUI'
+```
+If you deployed via file copy, restore from the dated zip taken in 12.1 and restart the task the
+same way. Either path gets you back to the exact prior state within a couple minutes.
+
+---
+
 ## Quick reference
 
 | Action | Command |
 |---|---|
-| Start service | `nssm start DCAnomalyWebUI` |
-| Stop service | `nssm stop DCAnomalyWebUI` |
-| Manual UI run | `python start.py --prod` |
+| Start web UI | `Start-ScheduledTask -TaskName 'AD-Agent-WebUI'` (see §9/Register-WebUIStartup.ps1) |
+| Stop web UI | `Stop-ScheduledTask -TaskName 'AD-Agent-WebUI'` |
+| Update the application | See §12 — pull, restart web UI task if `WebApp/` changed, verify `/healthz` |
+| Manual UI run (testing only) | `python start.py --prod` |
 | CLI anomaly scan | `.\Run-AnomalyScan.ps1` |
 | CLI compliance scan | `.\Run-AnomalyScan.ps1 -ComplianceScan` |
 | Dry run (no reporting) | `.\Run-AnomalyScan.ps1 -DryRun -ComplianceScan` |
-| Web UI logs | `C:\Apps\AD-Agent\DCAnomalyAgent\State\scan.log` |
+| Web UI logs | `C:\Apps\AD-Agent\DCAnomalyAgent\State\scan.log`, `watchdog.log`, `audit.log` |
+| Web UI health | `Invoke-WebRequest http://localhost:5000/healthz -UseBasicParsing` |
 
 ---
 
