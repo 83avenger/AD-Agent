@@ -291,7 +291,11 @@ function Find-ExpiringCertificates {
     # Group identical certs (same thumbprint) discovered in multiple places.
     $grouped = $expiring | Group-Object Thumbprint
 
-    $findings = foreach ($g in $grouped) {
+    # @() forces an array even when $grouped has exactly one element - otherwise
+    # "$findings = foreach (...) {...}" collapses to a single unwrapped PSCustomObject,
+    # and the "$findings += ..." below then fails trying to call the object's own
+    # (nonexistent) + operator instead of PowerShell's array-append behavior.
+    $findings = @(foreach ($g in $grouped) {
         $first = $g.Group[0]
         $daysRemaining = [math]::Floor(($first.NotAfter - $Now).TotalDays)
         $severity = if ($daysRemaining -lt 0) { 'Critical' }
@@ -312,7 +316,7 @@ function Find-ExpiringCertificates {
             DnsNames      = $first.DnsNames
             CollectionErrors = $null
         }
-    }
+    })
 
     # Append collection errors as Low-severity informational findings.
     foreach ($e in $errors) {
