@@ -85,7 +85,16 @@ if ($Register) {
 
     $action  = New-ScheduledTaskAction -Execute $psExe `
         -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$watchdogScript`" -Url `"$Url`" -TaskName `"$TaskName`""
-    $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes $IntervalMinutes) -RepetitionDuration ([TimeSpan]::MaxValue)
+    # -RepetitionDuration ([TimeSpan]::MaxValue) looks like the obvious way to say "repeat
+    # forever," but MaxValue (10675199.02:48:05.4775807) doesn't fit the task XML schema's
+    # duration format and gets mangled into an invalid value at registration time (the
+    # "task XML contains a value which is incorrectly formatted or out of range" error).
+    # The actual supported way to get an indefinite repetition is to leave Duration blank
+    # on the trigger object after creating it - Task Scheduler treats an empty duration
+    # paired with a set interval as "repeat indefinitely."
+    $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes $IntervalMinutes)
+    $trigger.Repetition.Duration = ""
+    $trigger.Repetition.StopAtDurationEnd = $false
     $principal = New-ScheduledTaskPrincipal -UserId $GmsaAccount -LogonType Password -RunLevel Highest
     $settings  = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 2) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 
@@ -95,8 +104,10 @@ if ($Register) {
         Write-Host "Task '$watchdogTaskName' already exists - unregistering old copy before re-registering."
         Unregister-ScheduledTask -TaskName $watchdogTaskName -Confirm:$false
     }
+    # -ErrorAction Stop so a registration failure actually stops the script here instead of
+    # falling through to the "registered" success message below with a non-terminating error.
     Register-ScheduledTask -TaskName $watchdogTaskName -Action $action -Trigger $trigger `
-        -Principal $principal -Settings $settings `
+        -Principal $principal -Settings $settings -ErrorAction Stop `
         -Description "Polls $Url every $IntervalMinutes minute(s) and restarts '$TaskName' if it's down or hung."
 
     Write-Host "`nWatchdog task '$watchdogTaskName' registered - runs every $IntervalMinutes minute(s)."
