@@ -80,6 +80,17 @@ function Write-WatchdogLog {
 }
 
 if ($Register) {
+    # Registering a Scheduled Task with a -Principal other than the current interactive user
+    # (here, a gMSA via -LogonType Password) requires local admin rights - deliberately checked
+    # only in this -Register branch, not at the top of the whole script via #Requires, since
+    # the script's OTHER mode (a plain health-check-and-restart poll, invoked repeatedly by the
+    # watchdog's own Scheduled Task) runs under the gMSA itself, which is intentionally NOT a
+    # local admin. Blocking the whole file on elevation would break that recurring poll.
+    $isElevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    if (-not $isElevated) {
+        throw "Registering the watchdog task requires an elevated (Run as Administrator) PowerShell session - re-open PowerShell as Administrator and re-run this same command."
+    }
+
     $watchdogScript = $MyInvocation.MyCommand.Path
     $psExe = if (Get-Command pwsh -ErrorAction SilentlyContinue) { (Get-Command pwsh).Source } else { (Get-Command powershell).Source }
 
