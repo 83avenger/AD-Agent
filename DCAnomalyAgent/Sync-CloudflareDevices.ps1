@@ -59,8 +59,28 @@ if (-not $cf -or -not $cf.Enabled) {
     Write-Host "Cloudflare Zero Trust integration is disabled (Integrations.CloudflareZeroTrust.Enabled = `$false). Nothing to do."
     return
 }
-if (-not $cf.ApiToken -or -not $cf.AccountId) {
-    throw "Integrations.CloudflareZeroTrust is enabled but ApiToken and/or AccountId is blank in $ConfigPath."
+
+# Real credentials belong in Config\integration-secrets.json (gitignored, written by the
+# web UI's Integrations page) - the same place vendor warranty keys live. settings.psd1 is
+# git-tracked, so a token pasted there would be committed. Prefer the secrets file and fall
+# back to settings.psd1 only for an existing hand-edited config.
+$apiToken  = $cf.ApiToken
+$accountId = $cf.AccountId
+$secretsPath = Join-Path $PSScriptRoot 'Config\integration-secrets.json'
+if (Test-Path $secretsPath) {
+    try {
+        $saved = (Get-Content -Raw -Path $secretsPath | ConvertFrom-Json).CloudflareZeroTrust
+        if ($saved) {
+            if ($saved.ApiToken)  { $apiToken  = $saved.ApiToken }
+            if ($saved.AccountId) { $accountId = $saved.AccountId }
+        }
+    } catch {
+        Write-Verbose "Could not read $secretsPath - falling back to settings.psd1: $_"
+    }
+}
+
+if (-not $apiToken -or -not $accountId) {
+    throw "Cloudflare Zero Trust is enabled but ApiToken and/or AccountId is blank. Set them on the web UI's Integrations page (preferred - writes to Config\integration-secrets.json), or in $ConfigPath."
 }
 
 function Write-SyncLog {
@@ -75,7 +95,7 @@ function Write-SyncLog {
 }
 
 Write-SyncLog "Querying Cloudflare Zero Trust device roster..."
-$devices = @(Get-CloudflareDevice -ApiToken $cf.ApiToken -AccountId $cf.AccountId -TimeoutSec $TimeoutSec)
+$devices = @(Get-CloudflareDevice -ApiToken $apiToken -AccountId $accountId -TimeoutSec $TimeoutSec)
 Write-SyncLog "Cloudflare returned $($devices.Count) enrolled device(s)."
 
 if (-not $devices) { return }

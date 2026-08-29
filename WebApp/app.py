@@ -6,6 +6,7 @@ that executes the Scheduled Task.
 """
 
 import hmac
+import ipaddress
 import json
 import os
 import subprocess
@@ -508,6 +509,7 @@ def _is_online(last_seen_iso: str | None) -> bool:
 
 
 STALE_THRESHOLD_DAYS = 14  # e.g. a laptop out on leave for 2-3 weeks
+PRESENCE_WINDOW_DAYS = 30  # window for the Endpoints page's office/remote day counts
 
 
 def _time_ago(last_seen_iso: str | None) -> str:
@@ -918,6 +920,58 @@ def metrics():
     return Response(body, content_type="text/plain; version=0.0.4; charset=utf-8")
 
 
+def _corporate_networks() -> list:
+    """Corporate CIDRs from the CORPORATE_NETWORKS environment variable, e.g.
+    '172.29.0.0/16,10.44.0.0/16'. Set it alongside COLLECTOR_TOKEN on the server.
+
+    An env var rather than settings.psd1 because that's a PowerShell data file this
+    app can't parse - same reason ASSETS_DATABASE_URL and COLLECTOR_TOKEN live in the
+    environment. Unset means every check-in is classified 'Unknown', which is honest:
+    without knowing your ranges we cannot tell an office IP from a home one."""
+    raw = os.environ.get("CORPORATE_NETWORKS", "")
+    nets = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            nets.append(ipaddress.ip_network(part, strict=False))
+        except ValueError:
+            app.logger.warning("Ignoring invalid CIDR in CORPORATE_NETWORKS: %r", part)
+    return nets
+
+
+def _classify_location(reported_ip: str | None, observed_ip: str | None) -> str:
+    """Office vs Remote for one check-in.
+
+    Laptops here go home every night and check in from both places, so a single
+    "last seen" would keep flip-flopping and tell you nothing. Classifying each
+    check-in lets both facts be kept side by side.
+
+    Two IPs are available and they answer different questions: the DEVICE-REPORTED
+    address is the laptop's own adapter (what it thinks it is), while the OBSERVED
+    address is the socket this request actually arrived from. A laptop at home on
+    WARP tunnels into the corporate network, so the observed address can look
+    internal while the device is physically at a kitchen table - which is why the
+    device-reported address is trusted first and the observed one is only a
+    fallback. Neither is spoof-proof; this is inventory context, not a security
+    control, and it is not used for any access decision."""
+    nets = _corporate_networks()
+    if not nets:
+        return "Unknown"
+    for candidate in (reported_ip, observed_ip):
+        if not candidate:
+            continue
+        try:
+            addr = ipaddress.ip_address(str(candidate).strip())
+        except ValueError:
+            continue
+        if any(addr in n for n in nets):
+            return "Office"
+        return "Remote"   # first parseable address decides; don't fall through
+    return "Unknown"
+
+
 @app.route("/api/collector/checkin", methods=["POST"])
 def collector_checkin():
     """Receives a push-collector check-in from an endpoint (see
@@ -961,8 +1015,13 @@ def collector_checkin():
     if source not in ("PushCollector", "CloudflareWARP"):
         source = "PushCollector"
 
+    location = _classify_location(payload.get("IP"), request.remote_addr)
+
     try:
-        key = assets_db.record_checkin(STATE_DIR, payload, checkin_source=source)
+        key = assets_db.record_checkin(
+            STATE_DIR, payload, checkin_source=source, location=location,
+            corp_dns_suffix=os.environ.get("CORPORATE_DNS_SUFFIX", ""),
+        )
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     except Exception as exc:  # noqa: BLE001 - never leak a stack trace to an endpoint
@@ -970,7 +1029,7 @@ def collector_checkin():
         return jsonify({"error": "failed to record check-in", "detail": str(exc)}), 500
 
     sw = payload.get("Software")
-    _audit("collector_checkin", f"key={key} ip={payload.get('IP')} software={len(sw) if sw else 0}")
+    _audit("collector_checkin", f"key={key} ip={payload.get('IP')} loc={location} software={len(sw) if sw else 0}")
     return jsonify({"status": "ok", "dedup_key": key}), 200
 
 
@@ -1309,11 +1368,17 @@ def endpoints_list():
             pass
 
     by_source: dict = {}
+    by_location: dict = {}
     for e in endpoints:
         s = e.get("CheckinSource", "Unknown")
         by_source[s] = by_source.get(s, 0) + 1
+        loc = e.get("LastLocation", "Unknown")
+        by_location[loc] = by_location.get(loc, 0) + 1
 
-    collector_enabled = bool(os.environ.get("COLLECTOR_TOKEN"))
+    # Office/remote day counts over the last 30 days - the pattern view. A laptop
+    # carried home nightly shows up as both, which is the point: neither number
+    # overwrites the other the way a single "last seen" field would.
+    presence = assets_db.presence_summary(STATE_DIR, days=PRESENCE_WINDOW_DAYS)
 
     return render_template(
         "endpoints.html",
@@ -1322,7 +1387,11 @@ def endpoints_list():
         online_count=len(now_online),
         today_count=len(today),
         by_source=sorted(by_source.items(), key=lambda kv: -kv[1]),
-        collector_enabled=collector_enabled,
+        by_location=sorted(by_location.items(), key=lambda kv: -kv[1]),
+        presence=presence,
+        presence_days=PRESENCE_WINDOW_DAYS,
+        location_configured=bool(_corporate_networks()),
+        collector_enabled=bool(os.environ.get("COLLECTOR_TOKEN")),
         is_online=_is_online,
         is_stale=_is_stale,
         time_ago=_time_ago,

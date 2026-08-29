@@ -44,6 +44,33 @@ Invoke-WebRequest -Uri 'http://localhost:5000/api/collector/checkin' -Method POS
     -Headers @{ 'X-Collector-Token' = 'deliberately-wrong' } -UseBasicParsing
 ```
 
+### Office vs home classification (recommended)
+
+Laptops carried home every night check in from both places — the office by day, home in the
+evening and at weekends. Without knowing your internal ranges, every check-in is recorded as
+`Unknown` location. Set these two so the tool can tell them apart:
+
+```powershell
+[Environment]::SetEnvironmentVariable('CORPORATE_NETWORKS', '172.29.0.0/16,10.44.0.0/16', 'Machine')
+[Environment]::SetEnvironmentVariable('CORPORATE_DNS_SUFFIX', 'amg.local', 'Machine')
+```
+
+What each one buys you:
+
+- **`CORPORATE_NETWORKS`** — each check-in is classified Office or Remote, and the two are stored
+  in *separate* columns. A weekend of home check-ins therefore never erases "last seen in the
+  office on Friday", which is the question that actually matters for physical audits, imaging,
+  and any hands-on work. The Endpoints page also shows office/remote **days present** over the
+  last 30 days, so the pattern is visible rather than just the latest ping.
+- **`CORPORATE_DNS_SUFFIX`** — a laptop resolves its own FQDN from whatever DNS it currently has.
+  In the office that's `lap01.amg.local`; on a home router it's often `lap01.lan` or just
+  `lap01`. Deduplication is on the short name so it merges correctly either way, but without
+  this the *displayed* name would flip every time the device moved. This pins the corporate
+  FQDN once seen.
+
+Neither is a security control and neither is spoof-proof — a device reports its own IP. This is
+inventory context only and is never used for an access decision.
+
 ---
 
 ## 2. Stage the collector script where endpoints can read it

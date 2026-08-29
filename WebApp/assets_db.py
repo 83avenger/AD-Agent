@@ -19,7 +19,7 @@ what the operator configured.
 
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 BACKEND = "postgres" if os.environ.get("ASSETS_DATABASE_URL") else "sqlite"
@@ -81,7 +81,31 @@ _ADDED_COLUMNS = {
     "last_checkin":   "TEXT",   # when the device last pushed its own inventory to us
     "checkin_source": "TEXT",   # 'PushCollector' | 'CloudflareWARP'
     "checkin_user":   "TEXT",   # logged-on user (push collector) / WARP-enrolled user email
+    # A laptop carried home every night checks in from the office by day and from home
+    # by evening/weekend. Keeping only "last check-in" would mean each location's
+    # timestamp erases the other's, so "when was this device last actually in the
+    # office?" - the question that matters for physical audits, imaging and hands-on
+    # work - becomes unanswerable. These keep both facts side by side.
+    "last_office_checkin": "TEXT",
+    "last_remote_checkin": "TEXT",
+    "last_location":       "TEXT",   # 'Office' | 'Remote' | 'Unknown'
 }
+
+# Daily presence rollup. NOT one row per check-in: presence check-ins run every 30
+# minutes, so 3000 laptops would write ~144k rows/day and the table would be useless
+# within a month. One row per (device, day, location) collapses that to ~1-2 rows per
+# device per day while still answering "how many days was this in the office" exactly.
+_SCHEMA_CHECKIN_DAYS = """
+    CREATE TABLE IF NOT EXISTS checkin_days (
+        dedup_key     TEXT NOT NULL,
+        day           TEXT NOT NULL,
+        location      TEXT NOT NULL,
+        first_seen_at TEXT NOT NULL,
+        last_seen_at  TEXT NOT NULL,
+        checkin_count INTEGER NOT NULL DEFAULT 1,
+        PRIMARY KEY (dedup_key, day, location)
+    )
+"""
 
 
 def _existing_columns(conn) -> set:
@@ -97,11 +121,11 @@ def _existing_columns(conn) -> set:
 def _migrate(conn) -> None:
     """Adds any missing _ADDED_COLUMNS to an existing assets table. Safe to run on
     every connection: it's a cheap catalog read, and a no-op once the columns exist."""
+    cur = conn.cursor()
+    cur.execute(_SCHEMA_CHECKIN_DAYS)
+
     have = _existing_columns(conn)
     missing = {c: t for c, t in _ADDED_COLUMNS.items() if c not in have}
-    if not missing:
-        return
-    cur = conn.cursor()
     for col, coltype in missing.items():
         # Column names here are our own literals, never user input - no injection path.
         cur.execute(f"ALTER TABLE assets ADD COLUMN {col} {coltype}")
@@ -224,7 +248,10 @@ def _row_to_asset(row) -> dict:
         d["CollectionNote"] = get("collection_note")
     for col, key in (("last_checkin", "LastCheckin"),
                      ("checkin_source", "CheckinSource"),
-                     ("checkin_user", "CheckinUser")):
+                     ("checkin_user", "CheckinUser"),
+                     ("last_office_checkin", "LastOfficeCheckin"),
+                     ("last_remote_checkin", "LastRemoteCheckin"),
+                     ("last_location", "LastLocation")):
         try:
             val = get(col)
         except (KeyError, IndexError):
@@ -241,7 +268,88 @@ def _row_to_asset(row) -> dict:
     return d
 
 
-def record_checkin(state_dir: Path, payload: dict, checkin_source: str = "PushCollector") -> str:
+def _preferred_name(existing: str | None, incoming: str | None, corp_suffix: str = "") -> str | None:
+    """Picks the name to keep when a device reports itself from different networks.
+
+    A laptop resolves its own FQDN via whatever DNS it currently has. In the office
+    that's 'lap01.amg.local'; on a home router it's often 'lap01.lan', 'lap01.home',
+    or just 'lap01'. The dedup key is the short name so it still merges correctly -
+    but without this the DISPLAYED name would flip every time the laptop moved,
+    which across 3000 assets is exactly the churn that makes an inventory feel
+    untrustworthy. Prefer the corporate FQDN once we've ever seen one."""
+    if not incoming:
+        return existing
+    if not existing:
+        return incoming
+    suffix = (corp_suffix or "").strip().lower().lstrip(".")
+    if suffix:
+        e_corp = existing.lower().endswith("." + suffix)
+        i_corp = incoming.lower().endswith("." + suffix)
+        if e_corp and not i_corp:
+            return existing        # don't let 'lap01.lan' overwrite 'lap01.amg.local'
+        if i_corp and not e_corp:
+            return incoming
+    # No corporate suffix configured (or both/neither match): prefer the more
+    # qualified name, since an FQDN carries strictly more information than a label.
+    if "." in existing and "." not in incoming:
+        return existing
+    return incoming
+
+
+def _record_presence_day(cur, key: str, location: str, when_iso: str) -> None:
+    """Upserts today's (device, location) presence row - see _SCHEMA_CHECKIN_DAYS."""
+    day = when_iso[:10]
+    if BACKEND == "postgres":
+        cur.execute("""
+            INSERT INTO checkin_days (dedup_key, day, location, first_seen_at, last_seen_at, checkin_count)
+            VALUES (%s, %s, %s, %s, %s, 1)
+            ON CONFLICT (dedup_key, day, location) DO UPDATE SET
+                last_seen_at  = EXCLUDED.last_seen_at,
+                checkin_count = checkin_days.checkin_count + 1
+        """, (key, day, location, when_iso, when_iso))
+    else:
+        cur.execute("""
+            INSERT INTO checkin_days (dedup_key, day, location, first_seen_at, last_seen_at, checkin_count)
+            VALUES (?, ?, ?, ?, ?, 1)
+            ON CONFLICT(dedup_key, day, location) DO UPDATE SET
+                last_seen_at  = excluded.last_seen_at,
+                checkin_count = checkin_days.checkin_count + 1
+        """, (key, day, location, when_iso, when_iso))
+
+
+def presence_summary(state_dir: Path, days: int = 30) -> dict:
+    """Per-device office/remote day counts over the last N days, for the Endpoints
+    page. Returns {dedup_key: {'Office': n, 'Remote': n, 'last_office_day': 'YYYY-MM-DD'}}.
+
+    Counts DAYS PRESENT, not check-ins - a laptop that sat in the office all day and
+    one that connected for ten minutes both count as one office day, which is the
+    honest granularity for 'how often is this device actually on site'."""
+    cutoff = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%d")
+    conn = get_connection(state_dir)
+    try:
+        cur = conn.cursor()
+        if BACKEND == "postgres":
+            cur.execute("SELECT dedup_key, location, COUNT(*), MAX(day) FROM checkin_days "
+                        "WHERE day >= %s GROUP BY dedup_key, location", (cutoff,))
+        else:
+            cur.execute("SELECT dedup_key, location, COUNT(*), MAX(day) FROM checkin_days "
+                        "WHERE day >= ? GROUP BY dedup_key, location", (cutoff,))
+        out: dict = {}
+        for key, location, count, last_day in cur.fetchall():
+            entry = out.setdefault(key, {"Office": 0, "Remote": 0, "Unknown": 0, "last_office_day": None})
+            if location in entry:
+                entry[location] = count
+            if location == "Office":
+                entry["last_office_day"] = last_day
+        return out
+    except Exception:
+        return {}
+    finally:
+        conn.close()
+
+
+def record_checkin(state_dir: Path, payload: dict, checkin_source: str = "PushCollector",
+                   location: str = "Unknown", corp_dns_suffix: str = "") -> str:
     """Records one device-initiated check-in (the push collector running on the
     endpoint itself, or a Cloudflare WARP device pull) into the same assets table
     network discovery writes to, keyed by the same dedup key - so a laptop that was
@@ -262,20 +370,37 @@ def record_checkin(state_dir: Path, payload: dict, checkin_source: str = "PushCo
     seen = payload.get("CollectedAt") or now
     software = payload.get("Software")
 
+    if location not in ("Office", "Remote", "Unknown"):
+        location = "Unknown"
+    # Only the matching location's column carries a timestamp; the other is NULL and
+    # COALESCE below leaves the stored value alone. That's what lets a laptop check in
+    # from home all weekend without erasing "last seen in the office on Friday".
+    office_ts = seen if location == "Office" else None
+    remote_ts = seen if location == "Remote" else None
+
     conn = get_connection(state_dir)
     try:
         cur = conn.cursor()
+
+        placeholder = "%s" if BACKEND == "postgres" else "?"
+        cur.execute(f"SELECT name FROM assets WHERE dedup_key = {placeholder}", (key,))
+        found = cur.fetchone()
+        existing_name = found[0] if found else None
+        name = _preferred_name(existing_name, payload.get("Name"), corp_dns_suffix)
+
         row = (
-            key, payload.get("Name"), payload.get("IP"), payload.get("AssetType"),
+            key, name, payload.get("IP"), payload.get("AssetType"),
             payload.get("OS"), payload.get("Source") or checkin_source, seen,
             json.dumps(software) if software else None,
-            seen, checkin_source, payload.get("User"), now, now,
+            seen, checkin_source, payload.get("User"),
+            office_ts, remote_ts, location, now, now,
         )
         if BACKEND == "postgres":
             cur.execute("""
                 INSERT INTO assets (dedup_key, name, ip, asset_type, os, source, last_seen,
-                    software_json, last_checkin, checkin_source, checkin_user, first_seen, updated_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    software_json, last_checkin, checkin_source, checkin_user,
+                    last_office_checkin, last_remote_checkin, last_location, first_seen, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (dedup_key) DO UPDATE SET
                     name           = COALESCE(EXCLUDED.name, assets.name),
                     ip             = COALESCE(EXCLUDED.ip, assets.ip),
@@ -287,13 +412,17 @@ def record_checkin(state_dir: Path, payload: dict, checkin_source: str = "PushCo
                     last_checkin   = EXCLUDED.last_checkin,
                     checkin_source = EXCLUDED.checkin_source,
                     checkin_user   = COALESCE(EXCLUDED.checkin_user, assets.checkin_user),
+                    last_office_checkin = COALESCE(EXCLUDED.last_office_checkin, assets.last_office_checkin),
+                    last_remote_checkin = COALESCE(EXCLUDED.last_remote_checkin, assets.last_remote_checkin),
+                    last_location  = EXCLUDED.last_location,
                     updated_at     = EXCLUDED.updated_at
             """, row)
         else:
             cur.execute("""
                 INSERT INTO assets (dedup_key, name, ip, asset_type, os, source, last_seen,
-                    software_json, last_checkin, checkin_source, checkin_user, first_seen, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    software_json, last_checkin, checkin_source, checkin_user,
+                    last_office_checkin, last_remote_checkin, last_location, first_seen, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(dedup_key) DO UPDATE SET
                     name           = COALESCE(excluded.name, assets.name),
                     ip             = COALESCE(excluded.ip, assets.ip),
@@ -305,8 +434,13 @@ def record_checkin(state_dir: Path, payload: dict, checkin_source: str = "PushCo
                     last_checkin   = excluded.last_checkin,
                     checkin_source = excluded.checkin_source,
                     checkin_user   = COALESCE(excluded.checkin_user, assets.checkin_user),
+                    last_office_checkin = COALESCE(excluded.last_office_checkin, assets.last_office_checkin),
+                    last_remote_checkin = COALESCE(excluded.last_remote_checkin, assets.last_remote_checkin),
+                    last_location  = excluded.last_location,
                     updated_at     = excluded.updated_at
             """, row)
+
+        _record_presence_day(cur, key, location, seen)
         conn.commit()
         return key
     finally:

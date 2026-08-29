@@ -47,12 +47,27 @@
   </div>
 </div>
 
-{% if by_source %}
+{% if not location_configured and endpoints %}
+<div class="alert alert-info">
+  <strong>Office vs remote is not configured.</strong> Set <code>CORPORATE_NETWORKS</code> on this
+  server to your internal CIDRs (e.g. <code>172.29.0.0/16,10.44.0.0/16</code>) and restart the web
+  UI. Until then every check-in is recorded as <em>Unknown</em> location — the data is still
+  captured, it just can't be split into office/home yet.
+</div>
+{% endif %}
+
+{% if by_source or by_location %}
 <div class="card">
   <div class="card-header">By check-in source</div>
   <div class="checkbox-group">
     {% for s, c in by_source %}<span class="badge badge-low">{{ s }}: {{ c }}</span>{% endfor %}
   </div>
+  {% if by_location %}
+  <div class="card-header" style="margin-top:1rem;">By last known location</div>
+  <div class="checkbox-group">
+    {% for l, c in by_location %}<span class="badge badge-low">{{ l }}: {{ c }}</span>{% endfor %}
+  </div>
+  {% endif %}
 </div>
 {% endif %}
 
@@ -70,16 +85,32 @@
     <table id="epTable">
       <thead><tr>
         <th>Device</th><th>Signed-in user</th><th>IP</th><th>Type</th>
-        <th>OS</th><th>Source</th><th>Status</th><th>Last check-in</th>
+        <th>Location</th><th title="Days present in the last {{ presence_days }} days">Office / Remote days</th>
+        <th>Last in office</th><th>Source</th><th>Status</th><th>Last check-in</th>
       </tr></thead>
       <tbody>
         {% for e in endpoints %}
+        {% set p = presence.get(e.DedupKey, {}) %}
         <tr>
           <td>{{ e.Name }}</td>
           <td>{{ e.CheckinUser or '—' }}</td>
           <td>{{ e.IP or '—' }}</td>
           <td>{{ e.AssetType or '—' }}</td>
-          <td>{{ e.OS or '—' }}</td>
+          <td>
+            {% if e.LastLocation == 'Office' %}
+              <span class="badge" style="background:var(--brand-mid); color:white;">Office</span>
+            {% elif e.LastLocation == 'Remote' %}
+              <span class="badge" style="background:var(--medium); color:white;">Remote</span>
+            {% else %}
+              <span class="badge" style="background:var(--border); color:var(--muted);">Unknown</span>
+            {% endif %}
+          </td>
+          <td style="white-space:nowrap;">
+            <span style="color:var(--brand-mid); font-weight:600;">{{ p.get('Office', 0) }}</span>
+            <span style="color:var(--muted);"> / </span>
+            <span style="color:var(--medium); font-weight:600;">{{ p.get('Remote', 0) }}</span>
+          </td>
+          <td style="color:var(--muted);">{{ time_ago(e.LastOfficeCheckin) if e.LastOfficeCheckin else 'never' }}</td>
           <td>{{ e.CheckinSource or '—' }}</td>
           <td>
             {% if is_online(e.LastCheckin) %}
@@ -95,7 +126,7 @@
           </td>
         </tr>
         {% else %}
-        <tr><td colspan="8" style="text-align:center; color:var(--muted);">No check-ins received yet.</td></tr>
+        <tr><td colspan="10" style="text-align:center; color:var(--muted);">No check-ins received yet.</td></tr>
         {% endfor %}
       </tbody>
     </table>
