@@ -1,0 +1,124 @@
+{% extends "base.html" %}
+{% block title %}Endpoint Check-ins — DC Anomaly Agent{% endblock %}
+
+{% block content %}
+
+<div style="margin: 1.5rem 0 .5rem;">
+  <h1 style="font-size:1.6rem; font-weight:800; color:var(--brand-dark);">Endpoint Check-ins</h1>
+  <p style="color:var(--muted); font-size:.9rem; margin-top:.3rem;">
+    Devices that pushed their own inventory to this server, most recent first. Unlike the
+    <a href="/assets" style="color:var(--accent);">Assets</a> page — which shows what a scan
+    from this server could reach — this list works for laptops on unreachable VLANs, behind
+    DHCP churn, or off the network entirely. They appear here the moment they come back online.
+  </p>
+</div>
+
+{% if not collector_enabled %}
+<div class="alert alert-info">
+  <strong>Push collector is not enabled yet.</strong> Set the <code>COLLECTOR_TOKEN</code>
+  environment variable on this server and restart the web UI, then deploy
+  <code>Send-InventoryCheckin.ps1</code> to endpoints via GPO — see
+  <code>DCAnomalyAgent\Install\Deploy-PushCollector-GPO.md</code>. Until then this endpoint
+  rejects all check-ins.
+</div>
+{% elif not endpoints %}
+<div class="alert alert-info">
+  Push collector is enabled, but no device has checked in yet. Verify the GPO scheduled task is
+  deployed and that endpoints can reach this server outbound on the web UI port.
+</div>
+{% endif %}
+
+<div class="score-grid">
+  <div class="score-card">
+    <div class="num">{{ total }}</div>
+    <div class="lbl">Devices checked in</div>
+  </div>
+  <div class="score-card {{ 'good' if online_count else 'warn' }}">
+    <div class="num">{{ online_count }}</div>
+    <div class="lbl">Online now</div>
+  </div>
+  <div class="score-card">
+    <div class="num">{{ today_count }}</div>
+    <div class="lbl">Seen in last 24h</div>
+  </div>
+  <div class="score-card">
+    <div class="num">{{ by_source|length }}</div>
+    <div class="lbl">Check-in source(s)</div>
+  </div>
+</div>
+
+{% if by_source %}
+<div class="card">
+  <div class="card-header">By check-in source</div>
+  <div class="checkbox-group">
+    {% for s, c in by_source %}<span class="badge badge-low">{{ s }}: {{ c }}</span>{% endfor %}
+  </div>
+</div>
+{% endif %}
+
+<div class="card">
+  <div class="card-header">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/>
+    </svg>
+    Check-in feed ({{ total }})
+  </div>
+  <input type="text" id="epFilter" placeholder="Filter by device, user, IP, OS…"
+    style="width:100%; padding:.55rem .85rem; border:1px solid var(--border); border-radius:var(--radius);
+      font-size:.875rem; margin-bottom:1rem;" onkeyup="filterEndpoints()">
+  <div class="tbl-wrap">
+    <table id="epTable">
+      <thead><tr>
+        <th>Device</th><th>Signed-in user</th><th>IP</th><th>Type</th>
+        <th>OS</th><th>Source</th><th>Status</th><th>Last check-in</th>
+      </tr></thead>
+      <tbody>
+        {% for e in endpoints %}
+        <tr>
+          <td>{{ e.Name }}</td>
+          <td>{{ e.CheckinUser or '—' }}</td>
+          <td>{{ e.IP or '—' }}</td>
+          <td>{{ e.AssetType or '—' }}</td>
+          <td>{{ e.OS or '—' }}</td>
+          <td>{{ e.CheckinSource or '—' }}</td>
+          <td>
+            {% if is_online(e.LastCheckin) %}
+              <span class="badge" style="background:var(--success); color:white;">Online</span>
+            {% elif is_stale(e.LastCheckin) %}
+              <span class="badge" style="background:var(--high); color:white;">Stale</span>
+            {% else %}
+              <span class="badge" style="background:var(--border); color:var(--muted);">Offline</span>
+            {% endif %}
+          </td>
+          <td style="{{ 'color:var(--high); font-weight:600;' if is_stale(e.LastCheckin) else 'color:var(--muted);' }}">
+            {{ time_ago(e.LastCheckin) }}
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="8" style="text-align:center; color:var(--muted);">No check-ins received yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<p style="font-size:.8rem; color:var(--muted); margin-top:1rem;">
+  Check-ins merge into the same asset records as network discovery, keyed by hostname — a device
+  found both ways appears once, not twice, and its check-in refreshes the IP and last-seen shown
+  on the <a href="/assets" style="color:var(--accent);">Assets</a> page. Software pushed by an
+  endpoint shows up in the <a href="/software" style="color:var(--accent);">Software List</a>
+  exactly like WinRM-collected inventory.
+</p>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+function filterEndpoints(){
+  const q = document.getElementById('epFilter').value.toLowerCase();
+  document.querySelectorAll('#epTable tbody tr').forEach(row=>{
+    row.style.display = row.textContent.toLowerCase().includes(q) ? '' : 'none';
+  });
+}
+</script>
+{% endblock %}

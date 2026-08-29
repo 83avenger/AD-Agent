@@ -273,9 +273,19 @@
             AndroidEnterprise = @{ EnterpriseId = ''; ServiceAccountKeyPath = '' }
         }
 
-        # Cloudflare Zero Trust API - device/user identity for WARP-connected
-        # remote users, as a richer alternative to just scanning the WARP IP
-        # range (which Discovery already does). Documented future enhancement.
+        # Cloudflare Zero Trust API - pulls the WARP-enrolled device roster, which is
+        # a far better source for roaming laptops than scanning the WARP IP range:
+        # the agent is already on every laptop, so you get hostname, OS, signed-in
+        # user and last-seen for devices this server could never reach.
+        #
+        # LIMIT, because it isn't obvious: Cloudflare has NO installed-software API.
+        # Posture checks are assertions you define ("is X running?"), not an
+        # enumeration. Devices synced from here arrive with identity + presence and
+        # NO software list - that still comes from the push collector
+        # (Collector\Send-InventoryCheckin.ps1) or WinRM.
+        #
+        # Token needs Account > Zero Trust > Read. Run Sync-CloudflareDevices.ps1
+        # (add it to Register-ScheduledTask.ps1 or its own task) to populate.
         CloudflareZeroTrust = @{
             Enabled  = $false
             ApiToken = ''

@@ -5,6 +5,7 @@ PDF and CSV reports. Designed to run on the same management server
 that executes the Scheduled Task.
 """
 
+import hmac
 import json
 import os
 import subprocess
@@ -917,6 +918,62 @@ def metrics():
     return Response(body, content_type="text/plain; version=0.0.4; charset=utf-8")
 
 
+@app.route("/api/collector/checkin", methods=["POST"])
+def collector_checkin():
+    """Receives a push-collector check-in from an endpoint (see
+    DCAnomalyAgent/Collector/Send-InventoryCheckin.ps1).
+
+    Auth is a shared secret in X-Collector-Token, compared with hmac.compare_digest
+    so a wrong token can't be recovered by timing the response. The token lives in
+    the COLLECTOR_TOKEN environment variable; if it isn't set, this endpoint refuses
+    every request rather than accepting unauthenticated writes - the feature is off
+    until someone deliberately turns it on.
+
+    Note this is a WRITE endpoint reachable from every endpoint VLAN, which is a
+    wider exposure than the rest of the app: a leaked token lets someone submit
+    bogus inventory (it cannot read anything back, and the payload only ever reaches
+    the assets table via parameterized SQL). Treat the token as a real secret,
+    deploy it via GPO Preferences rather than pasting it into a shared script, and
+    rotate it by changing COLLECTOR_TOKEN plus the GPO value together."""
+    expected = os.environ.get("COLLECTOR_TOKEN", "")
+    if not expected:
+        return jsonify({
+            "error": "collector endpoint disabled",
+            "detail": "Set the COLLECTOR_TOKEN environment variable on the AD-Agent "
+                      "server to enable push check-ins.",
+        }), 503
+
+    presented = request.headers.get("X-Collector-Token", "")
+    if not hmac.compare_digest(presented, expected):
+        _audit("collector_checkin_denied", f"remote_addr={request.remote_addr}")
+        return jsonify({"error": "unauthorized"}), 401
+
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"error": "expected a JSON object body"}), 400
+
+    # Sync-CloudflareDevices.ps1 posts through this same endpoint so there's one
+    # tested write path, and labels its rows CloudflareWARP. Whitelisted rather than
+    # free-text: an endpoint could otherwise write an arbitrary string into the
+    # source column. Worst case even so is a mislabelled row - no privilege gain -
+    # but a fixed set keeps the Endpoints page's grouping meaningful.
+    source = payload.get("CheckinSource")
+    if source not in ("PushCollector", "CloudflareWARP"):
+        source = "PushCollector"
+
+    try:
+        key = assets_db.record_checkin(STATE_DIR, payload, checkin_source=source)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:  # noqa: BLE001 - never leak a stack trace to an endpoint
+        app.logger.exception("collector check-in failed")
+        return jsonify({"error": "failed to record check-in", "detail": str(exc)}), 500
+
+    sw = payload.get("Software")
+    _audit("collector_checkin", f"key={key} ip={payload.get('IP')} software={len(sw) if sw else 0}")
+    return jsonify({"status": "ok", "dedup_key": key}), 200
+
+
 @app.route("/api/discovery/asset/<path:name>")
 def api_discovery_asset(name: str):
     """Full detail (incl. installed software) for one discovered device, read fresh
@@ -1226,6 +1283,52 @@ def assets_list():
     )
 
 
+@app.route("/endpoints")
+def endpoints_list():
+    """Live feed of devices that have pushed a check-in - laptops coming back online,
+    newest first. This is the view that jump-server-initiated scanning could never
+    produce for roaming devices: a laptop on an unreachable VLAN, behind DHCP churn,
+    or asleep for three weeks simply appears here the moment it phones home."""
+    try:
+        endpoints = assets_db.load_recent_checkins(STATE_DIR)
+    except Exception:
+        endpoints = []
+
+    now_online = [e for e in endpoints if _is_online(e.get("LastCheckin"))]
+
+    # "Came online today" = first appearance or a return after a long silence is not
+    # something a single timestamp can tell us, so this is simply "checked in within
+    # the last 24h" - honest about what the data supports.
+    day_ago = datetime.utcnow().timestamp() - 86400
+    today = []
+    for e in endpoints:
+        try:
+            if datetime.fromisoformat(str(e["LastCheckin"]).replace("Z", "")).timestamp() >= day_ago:
+                today.append(e)
+        except (ValueError, KeyError, TypeError):
+            pass
+
+    by_source: dict = {}
+    for e in endpoints:
+        s = e.get("CheckinSource", "Unknown")
+        by_source[s] = by_source.get(s, 0) + 1
+
+    collector_enabled = bool(os.environ.get("COLLECTOR_TOKEN"))
+
+    return render_template(
+        "endpoints.html",
+        endpoints=endpoints,
+        total=len(endpoints),
+        online_count=len(now_online),
+        today_count=len(today),
+        by_source=sorted(by_source.items(), key=lambda kv: -kv[1]),
+        collector_enabled=collector_enabled,
+        is_online=_is_online,
+        is_stale=_is_stale,
+        time_ago=_time_ago,
+    )
+
+
 @app.route("/software")
 def software_list():
     """Standalone, always-available view of every collected software record across every
@@ -1243,7 +1346,33 @@ def software_list():
         for s in all_sw if s.get("Error")
     ]
     assets, _ = _load_discovery_inventory()
-    covered = {i["ComputerName"] for i in issues} | {s.get("ComputerName") for s in software}
+
+    # Software pushed by the endpoint collector lives on the asset record, not in the
+    # scan snapshot - a roaming laptop is never in a snapshot, because no scan from
+    # this server can reach it. Merge those in so pushed inventory is visible here and
+    # not just in the dashboard drill-down. Snapshot (WinRM-collected) data wins for a
+    # host present in both, since that's the run this page's vulnerability
+    # cross-reference was actually computed against.
+    have_software_for = {s.get("ComputerName") for s in software if s.get("ComputerName")}
+    for a in assets:
+        name = a.get("Name")
+        pushed = a.get("Software")
+        if not name or not pushed or name in have_software_for:
+            continue
+        for item in pushed:
+            if not isinstance(item, dict):
+                continue
+            software.append({
+                "ComputerName": name,
+                "Category":     a.get("AssetType") or "Unknown",
+                "Name":         item.get("Name"),
+                "Version":      item.get("Version"),
+                "Publisher":    item.get("Publisher"),
+                "InstallDate":  item.get("InstallDate"),
+            })
+        have_software_for.add(name)
+
+    covered = {i["ComputerName"] for i in issues} | have_software_for
     for a in assets:
         note = a.get("CollectionNote")
         name = a.get("Name")
