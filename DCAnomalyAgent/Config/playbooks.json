@@ -1,0 +1,146 @@
+{
+  "_comment": [
+    "SOAR playbooks. Read by WebApp/soar.py; edit here and the change takes effect on the",
+    "next evaluation (no restart needed - the file is re-read each run).",
+    "",
+    "Every playbook: trigger.source selects which finding list to scan",
+    "(Anomalies | ComplianceGaps | ExpiringCertificates | ZeroDays | VulnerableSoftware),",
+    "trigger.severity optionally filters, conditions are ANDed, actions run in order.",
+    "",
+    "Placeholders like {ComputerName} are filled from the finding.",
+    "",
+    "SAFETY: actions marked destructive in soar.py's ACTIONS registry",
+    "(disable_ad_user, disable_ad_computer, remove_from_privileged_group) NEVER run",
+    "automatically. They queue for human approval on the /soar page even in live mode.",
+    "The two shipped below that use them are deliberately disabled:false - turn them on",
+    "only once you have watched the engine run in dryrun for a while and trust what it",
+    "would have done."
+  ],
+
+  "playbooks": [
+    {
+      "id": "critical-anomaly-notify",
+      "name": "Notify on critical AD anomaly",
+      "enabled": true,
+      "title": "Critical AD anomaly: {Type} on {ComputerName}",
+      "trigger": { "source": "Anomalies", "severity": ["Critical", "High"] },
+      "conditions": [],
+      "actions": [
+        {
+          "type": "notify_teams",
+          "params": { "text": "AD-Agent: {Severity} anomaly '{Type}' detected on {ComputerName}. Account: {Account}. {Detail}" }
+        }
+      ]
+    },
+
+    {
+      "id": "privileged-group-change",
+      "name": "Privileged group membership changed",
+      "enabled": true,
+      "title": "Privileged group change involving {Account}",
+      "trigger": { "source": "Anomalies" },
+      "conditions": [
+        { "field": "Type", "op": "contains", "value": "Privileged" }
+      ],
+      "actions": [
+        {
+          "type": "notify_teams",
+          "params": { "text": "AD-Agent: privileged group change - {Type} - account {Account} on {ComputerName}. Review immediately." }
+        },
+        {
+          "type": "tag_asset",
+          "params": { "asset": "{ComputerName}", "note": "Privileged group change observed ({Type})" }
+        }
+      ]
+    },
+
+    {
+      "id": "critical-compliance-gap",
+      "name": "Critical compliance gap opened",
+      "enabled": true,
+      "title": "{ControlId}: {Title} on {ComputerName}",
+      "trigger": { "source": "ComplianceGaps", "severity": ["Critical"] },
+      "conditions": [],
+      "actions": [
+        {
+          "type": "notify_teams",
+          "params": { "text": "AD-Agent: CRITICAL compliance gap {ControlId} on {ComputerName} - {Title}. Expected: {Expected}, actual: {Actual}." }
+        }
+      ]
+    },
+
+    {
+      "id": "cert-expiring-urgent",
+      "name": "Certificate expiring within 14 days",
+      "enabled": true,
+      "title": "Certificate expiring in {DaysRemaining} days: {Subject}",
+      "trigger": { "source": "ExpiringCertificates" },
+      "conditions": [
+        { "field": "DaysRemaining", "op": "lte", "value": 14 }
+      ],
+      "actions": [
+        {
+          "type": "notify_teams",
+          "params": { "text": "AD-Agent: certificate '{Subject}' expires in {DaysRemaining} days ({Locations})." }
+        }
+      ]
+    },
+
+    {
+      "id": "kev-exposure",
+      "name": "Actively-exploited CVE present on an asset",
+      "enabled": true,
+      "title": "KEV exposure {CveId} on {ComputerName}",
+      "trigger": { "source": "VulnerableSoftware" },
+      "conditions": [],
+      "actions": [
+        {
+          "type": "notify_teams",
+          "params": { "text": "AD-Agent: {CveId} ({VulnerabilityName}) - {SoftwareName} {SoftwareVersion} on {ComputerName}." }
+        },
+        {
+          "type": "tag_asset",
+          "params": { "asset": "{ComputerName}", "note": "KEV exposure: {CveId} via {SoftwareName}" }
+        }
+      ]
+    },
+
+    {
+      "id": "disable-account-on-lockout-storm",
+      "name": "DISABLED EXAMPLE - disable account after repeated lockouts",
+      "enabled": false,
+      "title": "Repeated lockouts for {Account}",
+      "trigger": { "source": "Anomalies", "severity": ["Critical"] },
+      "conditions": [
+        { "field": "Type", "op": "eq", "value": "AccountLockout" }
+      ],
+      "actions": [
+        {
+          "type": "notify_teams",
+          "params": { "text": "AD-Agent: repeated lockouts for {Account} on {ComputerName} - disable action queued for approval." }
+        },
+        {
+          "type": "disable_ad_user",
+          "params": { "Identity": "{Account}", "Reason": "AD-Agent playbook disable-account-on-lockout-storm" }
+        }
+      ]
+    },
+
+    {
+      "id": "remove-unexpected-privileged-member",
+      "name": "DISABLED EXAMPLE - remove unexpected privileged group member",
+      "enabled": false,
+      "title": "Unexpected privileged member {Account}",
+      "trigger": { "source": "Anomalies" },
+      "conditions": [
+        { "field": "Type", "op": "eq", "value": "NewPrivilegedAccount" }
+      ],
+      "actions": [
+        {
+          "type": "remove_from_privileged_group",
+          "params": { "Identity": "{Account}", "Group": "{GroupName}", "Reason": "AD-Agent playbook remove-unexpected-privileged-member" }
+        }
+      ]
+    }
+  ]
+}

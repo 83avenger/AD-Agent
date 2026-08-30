@@ -37,6 +37,7 @@ from report_generator import (
     generate_pdf,
 )
 import assets_db
+import soar
 
 APP_ROOT      = Path(__file__).parent
 PS_SCRIPT     = APP_ROOT.parent / "DCAnomalyAgent" / "Run-AnomalyScan.ps1"
@@ -59,6 +60,8 @@ DISCOVERY_INVENTORY_PATH = STATE_DIR / "asset-inventory.json"
 INTEGRATIONS_STATUS_PATH = STATE_DIR / "integrations-status.json"
 INTEGRATIONS_SCRIPT      = APP_ROOT.parent / "DCAnomalyAgent" / "Get-IntegrationStatus.ps1"
 WINRM_TEST_SCRIPT        = APP_ROOT.parent / "DCAnomalyAgent" / "Test-WinRM.ps1"
+PLAYBOOKS_PATH           = APP_ROOT.parent / "DCAnomalyAgent" / "Config" / "playbooks.json"
+SOAR_RESPONDER_SCRIPT    = APP_ROOT.parent / "DCAnomalyAgent" / "Invoke-SoarResponder.ps1"
 # Vendor API keys entered on the Vendor Warranty page live here, not in settings.psd1 or
 # git - see DCAnomalyAgent/Modules/DCAnomalyAgent.VendorWarranty.psm1.
 INTEGRATION_SECRETS_PATH = APP_ROOT.parent / "DCAnomalyAgent" / "Config" / "integration-secrets.json"
@@ -1340,6 +1343,80 @@ def assets_list():
         is_stale=_is_stale,
         time_ago=_time_ago,
     )
+
+
+def _findings_by_source() -> dict:
+    """The latest scan snapshot, keyed the way playbook triggers reference it."""
+    data, _ = _load_snapshot()
+    return {
+        "Anomalies":            data.get("Anomalies") or [],
+        "ComplianceGaps":       data.get("ComplianceGaps") or [],
+        "ExpiringCertificates": data.get("ExpiringCertificates") or [],
+        "ZeroDays":             data.get("ZeroDays") or [],
+        "VulnerableSoftware":   data.get("VulnerableSoftware") or [],
+    }
+
+
+@app.route("/soar")
+def soar_page():
+    """Incidents, pending approvals and action history for the response engine."""
+    playbooks = soar.load_playbooks(PLAYBOOKS_PATH)
+    problems = {pb.get("id", "?"): soar.validate_playbook(pb) for pb in playbooks}
+    problems = {k: v for k, v in problems.items() if v}
+
+    # Preview is always a dry evaluation - it shows what WOULD fire right now
+    # without writing anything, so the page is safe to open at any time.
+    preview = soar.evaluate(_findings_by_source(), playbooks)
+
+    return render_template(
+        "soar.html",
+        mode=soar.SOAR_MODE,
+        playbooks=playbooks,
+        problems=problems,
+        preview_count=len(preview),
+        preview=preview[:25],
+        incidents=soar.list_incidents(STATE_DIR),
+        pending=soar.list_actions(STATE_DIR, status=soar.PENDING_APPROVAL),
+        recent_actions=soar.list_actions(STATE_DIR)[:50],
+        actions_registry=soar.ACTIONS,
+        time_ago=_time_ago,
+    )
+
+
+@app.route("/soar/run", methods=["POST"])
+def soar_run():
+    if soar.SOAR_MODE == "off":
+        return render_template("index.html",
+                               error="SOAR is disabled. Set SOAR_MODE=dryrun (or live) and restart the web UI.")
+    playbooks = soar.load_playbooks(PLAYBOOKS_PATH)
+    summary = soar.run(
+        STATE_DIR, _findings_by_source(), playbooks,
+        teams_webhook=os.environ.get("TEAMS_WEBHOOK_URL", ""),
+        responder_script=SOAR_RESPONDER_SCRIPT,
+        powershell=_detect_powershell(),
+    )
+    _audit("soar_run", f"mode={summary.get('mode')} incidents={summary.get('incidents_created')}")
+    return redirect(url_for("soar_page"))
+
+
+@app.route("/soar/action/<action_id>/<decision>", methods=["POST"])
+def soar_decide(action_id: str, decision: str):
+    """Approve or reject a queued destructive action. Approval is the ONLY path by
+    which an AD-mutating action ever runs - there is no autonomous mode."""
+    if decision not in ("approve", "reject"):
+        return "unknown decision", 400
+    status = soar.QUEUED if decision == "approve" else soar.REJECTED
+    changed = soar.set_action_status(STATE_DIR, action_id, status, approved_by=_remote_user())
+    _audit(f"soar_action_{decision}", f"action_id={action_id} applied={changed}")
+
+    if changed and decision == "approve" and soar.SOAR_MODE == "live":
+        soar.execute_queued(
+            STATE_DIR,
+            teams_webhook=os.environ.get("TEAMS_WEBHOOK_URL", ""),
+            responder_script=SOAR_RESPONDER_SCRIPT,
+            powershell=_detect_powershell(),
+        )
+    return redirect(url_for("soar_page"))
 
 
 @app.route("/endpoints")

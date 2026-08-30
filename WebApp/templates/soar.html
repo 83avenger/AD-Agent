@@ -1,0 +1,184 @@
+{% extends "base.html" %}
+{% block title %}SOAR — DC Anomaly Agent{% endblock %}
+
+{% block content %}
+
+<div style="margin: 1.5rem 0 .5rem;">
+  <h1 style="font-size:1.6rem; font-weight:800; color:var(--brand-dark);">Response Automation (SOAR)</h1>
+  <p style="color:var(--muted); font-size:.9rem; margin-top:.3rem;">
+    Playbooks turn scan findings into tracked incidents and response actions. Anything that
+    changes Active Directory always waits for a human approval below — there is deliberately
+    no fully autonomous mode.
+  </p>
+</div>
+
+{% if mode == 'off' %}
+<div class="alert alert-info">
+  <strong>SOAR is disabled.</strong> Set <code>SOAR_MODE=dryrun</code> on this server and restart
+  the web UI to start evaluating playbooks without executing anything. Move to
+  <code>SOAR_MODE=live</code> only once you've watched dry-run results and trust them.
+  The preview below still works — it shows what <em>would</em> fire right now.
+</div>
+{% elif mode == 'dryrun' %}
+<div class="alert alert-info">
+  <strong>Dry-run mode.</strong> Playbooks evaluate and incidents are recorded, but no action
+  executes. Destructive actions would still require approval in live mode.
+</div>
+{% else %}
+<div class="alert alert-demo">
+  <strong>Live mode.</strong> Safe actions (notifications, tagging) execute automatically.
+  AD-changing actions still queue for approval below.
+</div>
+{% endif %}
+
+{% if problems %}
+<div class="alert alert-demo">
+  <strong>Playbook problems — these are skipped:</strong>
+  <ul style="margin:.5rem 0 0 1.2rem;">
+    {% for pid, errs in problems.items() %}<li><code>{{ pid }}</code>: {{ errs|join('; ') }}</li>{% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+<div class="score-grid">
+  <div class="score-card"><div class="num">{{ preview_count }}</div><div class="lbl">Would fire now</div></div>
+  <div class="score-card {{ 'warn' if pending else 'good' }}"><div class="num">{{ pending|length }}</div><div class="lbl">Awaiting approval</div></div>
+  <div class="score-card"><div class="num">{{ incidents|length }}</div><div class="lbl">Incidents</div></div>
+  <div class="score-card"><div class="num">{{ playbooks|selectattr('enabled')|list|length }}</div><div class="lbl">Playbooks enabled</div></div>
+</div>
+
+{% if pending %}
+<div class="card" style="border:1px solid var(--high);">
+  <div class="card-header" style="color:var(--high);">⚠ Actions awaiting your approval ({{ pending|length }})</div>
+  <p style="font-size:.85rem; color:var(--muted); margin-bottom:1rem;">
+    These change Active Directory. Review the target carefully — approving runs the action
+    against production.
+  </p>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>Action</th><th>Target</th><th>Incident</th><th>Raised</th><th>Decision</th></tr></thead>
+      <tbody>
+        {% for a in pending %}
+        <tr>
+          <td><code>{{ a.ActionType }}</code></td>
+          <td>{{ a.Entity or '—' }}<div style="font-size:.75rem; color:var(--muted);">{{ a.ParamsJson }}</div></td>
+          <td>{{ a.IncidentTitle or a.IncidentId }}</td>
+          <td style="color:var(--muted);">{{ time_ago(a.CreatedAt) }}</td>
+          <td style="white-space:nowrap;">
+            <form method="POST" action="/soar/action/{{ a.Id }}/approve" style="display:inline;"
+              onsubmit="return confirm('Approve {{ a.ActionType }} against {{ a.Entity }}? This runs against production Active Directory.');">
+              <button type="submit" class="btn btn-outline btn-sm"
+                style="color:var(--critical); border-color:var(--critical);">Approve</button>
+            </form>
+            <form method="POST" action="/soar/action/{{ a.Id }}/reject" style="display:inline; margin-left:.3rem;">
+              <button type="submit" class="btn btn-outline btn-sm">Reject</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+<div class="card">
+  <div class="card-header">Preview — what would fire against the current scan snapshot</div>
+  {% if not preview %}
+    <p style="color:var(--muted); font-size:.875rem;">Nothing matches right now.</p>
+  {% else %}
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>Playbook</th><th>Source</th><th>Severity</th><th>Finding</th></tr></thead>
+      <tbody>
+        {% for h in preview %}
+        <tr>
+          <td>{{ h.playbook.name }}</td>
+          <td>{{ h.source }}</td>
+          <td>{{ h.finding.Severity or '—' }}</td>
+          <td style="font-size:.8rem;">{{ (h.finding.Title or h.finding.Type or h.finding.CveId or h.finding.Subject or '—') }}
+            — {{ h.finding.ComputerName or h.finding.Account or '' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+  {% if mode != 'off' %}
+  <form method="POST" action="/soar/run" style="margin-top:1rem;">
+    <button type="submit" class="btn">Run playbooks now</button>
+  </form>
+  {% endif %}
+</div>
+
+<div class="card">
+  <div class="card-header">Incidents ({{ incidents|length }})</div>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>Raised</th><th>Title</th><th>Severity</th><th>Entity</th><th>Playbook</th><th>Status</th></tr></thead>
+      <tbody>
+        {% for i in incidents %}
+        <tr>
+          <td style="color:var(--muted); white-space:nowrap;">{{ time_ago(i.CreatedAt) }}</td>
+          <td>{{ i.Title }}</td>
+          <td>{{ i.Severity or '—' }}</td>
+          <td>{{ i.Entity or '—' }}</td>
+          <td style="font-size:.78rem; color:var(--muted);">{{ i.PlaybookId }}</td>
+          <td><span class="badge badge-low">{{ i.Status }}</span></td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6" style="text-align:center; color:var(--muted);">No incidents recorded yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header">Action history</div>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>When</th><th>Action</th><th>Target</th><th>Status</th><th>Approved by</th><th>Result</th></tr></thead>
+      <tbody>
+        {% for a in recent_actions %}
+        <tr>
+          <td style="color:var(--muted); white-space:nowrap;">{{ time_ago(a.ExecutedAt or a.CreatedAt) }}</td>
+          <td><code>{{ a.ActionType }}</code>{% if a.Destructive %} <span class="badge" style="background:var(--critical); color:white;">destructive</span>{% endif %}</td>
+          <td>{{ a.Entity or '—' }}</td>
+          <td>{{ a.Status }}</td>
+          <td>{{ a.ApprovedBy or '—' }}</td>
+          <td style="font-size:.75rem; color:var(--muted); max-width:280px; overflow:hidden;">{{ a.ResultJson or '' }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6" style="text-align:center; color:var(--muted);">No actions yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header">Available actions</div>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>Action</th><th>Approval</th><th>What it does</th></tr></thead>
+      <tbody>
+        {% for name, spec in actions_registry.items() %}
+        <tr>
+          <td><code>{{ name }}</code></td>
+          <td>{% if spec.destructive %}<span class="badge" style="background:var(--critical); color:white;">always required</span>{% else %}<span class="badge badge-low">auto (live mode)</span>{% endif %}</td>
+          <td style="font-size:.85rem;">{{ spec.description }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p style="font-size:.8rem; color:var(--muted); margin-top:.8rem;">
+    Playbooks are defined in <code>DCAnomalyAgent\Config\playbooks.json</code> and re-read on every
+    run — no restart needed. AD-changing actions run via
+    <code>Invoke-SoarResponder.ps1</code>, which refuses protected accounts and logs every
+    invocation to <code>State\soar-responder.log</code>.
+  </p>
+</div>
+
+{% endblock %}

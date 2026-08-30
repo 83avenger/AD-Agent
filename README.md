@@ -239,6 +239,21 @@ cd DCAnomalyAgent\Install
     -LockWebUIToLocalhost -GmsaAccount 'CONTOSO\svc-discoverAgt$' -PythonPath 'C:\Apps\Python312\python.exe'
 ```
 
+**Response automation / SOAR (optional, off by default):** `/soar` runs playbooks defined in
+`DCAnomalyAgent\Config\playbooks.json` against scan findings, turning them into tracked incidents
+and response actions. Enable with `SOAR_MODE=dryrun` (evaluates and records incidents, executes
+nothing), then `SOAR_MODE=live` once you trust what dry-run shows.
+
+Safety model, because this automates against production AD: actions that change Active Directory
+(`disable_ad_user`, `disable_ad_computer`, `remove_from_privileged_group`) **always** queue for
+human approval on the `/soar` page — there is deliberately no autonomous mode. They execute via
+`Invoke-SoarResponder.ps1`, which supports `-WhatIf`, refuses a configurable list of protected
+accounts, and logs every invocation to `State\soar-responder.log`. The scanning gMSA is read-only
+and *cannot* perform them; point the responder at a separately-scoped account if you enable
+destructive playbooks. Safe actions (Teams notification, asset tagging) run automatically in live
+mode. This is a focused AD response engine, not a FortiSOAR replacement — no visual playbook
+designer, vendor connector library, or case SLA management.
+
 **Metrics export & comparisons (optional):** `GET /metrics` exports scan findings, compliance
 score, discovery freshness, and AD-Agent's own `/healthz` checks in Prometheus format — point a
 Prometheus scrape config at it and import `grafana/ad-agent-dashboard.json` (panels) and
