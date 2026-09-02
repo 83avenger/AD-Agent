@@ -2,6 +2,11 @@
 
 A one-stop security services platform for Windows/AD environments, built in PowerShell. From a single jump server and a single gMSA it delivers anomaly detection, multi-framework compliance scanning (CIS, NIST, ISO 27001, HIPAA, OWASP), web application posture checks, asset discovery, and zero-day telemetry — with unified reporting to Microsoft Teams, SharePoint, and email, plus a web UI for on-demand scans and PDF/CSV reports.
 
+> **Deploying?** Start with **[DEPLOYMENT-MASTER.md](DEPLOYMENT-MASTER.md)** — the running order
+> for the whole solution, which stages depend on which, and consolidated references for
+> environment variables, scheduled tasks and firewall rules. The individual guides it points to
+> hold the detail.
+
 ## Security services at a glance
 
 | Service | What it covers | Entry point |
