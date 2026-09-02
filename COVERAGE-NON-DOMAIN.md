@@ -129,6 +129,106 @@ spot.
 
 ---
 
+## Deployment steps
+
+### Prerequisites (jump server — once)
+
+Already done if the GPO rollout is live. If not:
+
+```powershell
+# On the jump server
+[Environment]::SetEnvironmentVariable('COLLECTOR_TOKEN', '<your token>', 'Machine')
+Stop-ScheduledTask -TaskName 'AD-Agent-WebUI'; Start-ScheduledTask -TaskName 'AD-Agent-WebUI'
+```
+
+Non-domain hosts use the **same** `COLLECTOR_TOKEN` as domain endpoints — there's no separate
+credential to manage.
+
+### Step 1 — Check the hostname first
+
+Do this before anything else. Workgroup builds often keep a generic name, and dedup keys on the
+short hostname, so two hosts called `WIN-A3K9DL2` silently merge into one asset record:
+
+```powershell
+hostname
+```
+
+If it's a default/generic name, rename it (`Rename-Computer -NewName 'DMZ-WEB-01' -Restart`)
+before onboarding.
+
+### Step 2 — Confirm the host can reach the jump server
+
+Saves installing something that was never going to work:
+
+```powershell
+Test-NetConnection -ComputerName jump-jeremy.amg.local -Port 5000
+```
+
+`TcpTestSucceeded : True` is what you need. If it fails, that's the firewall rule below, not the
+collector.
+
+### Step 3 — Copy two files to the host
+
+```
+Send-InventoryCheckin.ps1
+Install-PushCollector.ps1
+```
+Keep them in the same folder — the installer looks for the collector next to itself by default
+(override with `-SourcePath`). Use whatever transfer method is approved for that host: file
+share, RDP copy/paste, USB for an isolated DMZ box.
+
+### Step 4 — Install (elevated PowerShell on the host)
+
+```powershell
+cd C:\Temp
+.\Install-PushCollector.ps1 -ServerUrl 'https://jump-jeremy.amg.local' -Token '<COLLECTOR_TOKEN>'
+```
+
+Use `http://...:5000` instead if the IIS reverse proxy (Phase 5) isn't deployed yet.
+
+The installer copies the collector to `C:\ProgramData\AD-Agent`, registers both scheduled tasks
+as SYSTEM, then **runs one check-in immediately and prints the result** — so you find out at
+install time whether it worked, rather than discovering silence tomorrow.
+
+Expect: `SUCCESS - this host is now reporting to ...`
+
+If instead you get a warning, the log printed above it names the cause — almost always a wrong
+token, `COLLECTOR_TOKEN` not set on the jump server, or no outbound route.
+
+### Step 5 — Verify on the jump server
+
+The host should appear on **`/endpoints`** within a minute, and on **`/assets`** with its OS,
+device type and (after the first daily full run) its software list.
+
+```powershell
+Get-Content C:\AD-Agent\DCAnomalyAgent\State\audit.log -Tail 5   # look for collector_checkin
+```
+
+### Step 6 — Firewall
+
+Row 23 of `firewall-request-ports.csv` covers it — outbound from the host to the jump server.
+**No inbound rule to these servers is needed**, which is a real security improvement over
+opening WinRM into a DMZ.
+
+### At scale
+
+- **Golden image:** run the installer during build; every host from that image reports in on
+  first boot (the presence task has an at-startup trigger).
+- **Config management:** Ansible/DSC/SCCM can invoke the installer non-interactively — it takes
+  no prompts.
+- **Removal:** `.\Install-PushCollector.ps1 -Uninstall` stops check-ins and removes the tasks.
+  The host's existing asset record on the jump server is left intact; delete it from the Assets
+  page if the machine is genuinely decommissioned.
+
+### Before the first rollout
+
+`Install-PushCollector.ps1` and `Send-InventoryCheckin.ps1` have not been executed anywhere yet
+(no PowerShell in the environment they were written in). Run them on **one** non-critical host
+first and read `C:\ProgramData\AD-Agent\collector.log` before touching a golden image or pushing
+to a fleet.
+
+---
+
 ## Practical notes
 
 - **Naming.** Workgroup machines are often built with generic names (`WIN-A3K9DL2`). Deduplication
