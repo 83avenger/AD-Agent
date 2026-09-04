@@ -391,21 +391,48 @@ if ($runCertScan) {
     $thresholdDays = if ($certCfg.ThresholdDays) { $certCfg.ThresholdDays } else { 90 }
     $collected = @()
 
-    # 1. Windows machine certificate stores across the configured asset types.
-    foreach ($at in $certCfg.ScanAssetTypes) {
-        $assetCfg = $config.Assets[$at]
-        if (-not $assetCfg) { continue }
-        try {
-            $targets = Get-AssetTargets -AssetType $at -AssetConfig $assetCfg -FallbackHosts $config.DomainControllers -InventoryPath $discoveryInventoryPath
-        } catch {
-            Write-ScanLog "ERROR (cert: resolve $at targets): $_"; continue
-        }
-        foreach ($t in $targets) {
+    # 1. Windows machine certificate stores.
+    #
+    # Hosts typed into the web UI arrive as -DomainControllerOverride and are
+    # authoritative: scanning them is the whole point of the request, so they
+    # replace the configured asset lists rather than acting as a fallback that
+    # Get-AssetTargets only consults when Assets.<Type>.Hosts happens to be empty.
+    $certTargets = @()
+    if ($DomainControllerOverride) {
+        $certTargets = @($config.DomainControllers)
+        Write-ScanLog "Certificate scan targets (from entered hosts): $($certTargets -join ', ')"
+    } else {
+        foreach ($at in $certCfg.ScanAssetTypes) {
+            $assetCfg = $config.Assets[$at]
+            if (-not $assetCfg) { continue }
             try {
-                $collected += Get-MachineCertificate -ComputerName $t -Stores $certCfg.MachineStores
+                $certTargets += Get-AssetTargets -AssetType $at -AssetConfig $assetCfg -FallbackHosts $config.DomainControllers -InventoryPath $discoveryInventoryPath
             } catch {
-                Write-ScanLog "ERROR (cert: machine store on $t): $_"
+                Write-ScanLog "ERROR (cert: resolve $at targets): $_"
             }
+        }
+        $certTargets = @($certTargets | Where-Object { $_ } | Select-Object -Unique)
+        Write-ScanLog "Certificate scan targets (from config asset types): $($certTargets.Count) host(s)"
+    }
+    if (-not $certTargets) {
+        Write-ScanLog "WARN (cert): no machine-store targets resolved - nothing to read certificate stores from."
+    }
+
+    foreach ($t in $certTargets) {
+        try {
+            $certRows = @(Get-MachineCertificate -ComputerName $t -Stores $certCfg.MachineStores)
+            # Get-MachineCertificate reports a collection failure by *returning* a row
+            # with an Error property instead of throwing, so the catch below never sees
+            # it and the row is later dropped for having a null NotAfter. Without this
+            # the whole host disappears from the report with no trace anywhere.
+            foreach ($row in $certRows | Where-Object { $_.Error }) {
+                Write-ScanLog "ERROR (cert: machine store on $t): $($row.Error)"
+            }
+            $ok = @($certRows | Where-Object { -not $_.Error })
+            Write-ScanLog "  ${t}: $($ok.Count) certificate(s)"
+            $collected += $certRows
+        } catch {
+            Write-ScanLog "ERROR (cert: machine store on $t): $_"
         }
     }
 

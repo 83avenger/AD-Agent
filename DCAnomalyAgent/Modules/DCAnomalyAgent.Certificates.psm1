@@ -44,6 +44,32 @@ $script:RootIssuerNoise = @(
     'ISRG Root'      # Let's Encrypt root/intermediate certs in the CA store
 )
 
+function Test-IsLocalCertHost {
+    <#
+    .SYNOPSIS
+        Is this target the machine we're running on?
+    .DESCRIPTION
+        Calling Invoke-Command against your own FQDN fails Kerberos loopback
+        authentication with "Access is denied" even for an elevated admin - a Windows
+        quirk, not a permissions gap. DCAnomalyAgent.SoftwareInventory.psm1 solved this
+        with Test-IsLocalComputer; the same predicate is duplicated here rather than
+        imported so the certificate scan has no load-order dependency on the software
+        inventory module (they run independently and either may be imported alone).
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$ComputerName)
+
+    $n = $ComputerName.Trim()
+    if ($n -in @('localhost', '.', '127.0.0.1', '::1')) { return $true }
+    if ($n -eq $env:COMPUTERNAME) { return $true }
+    try {
+        $localFqdn = [System.Net.Dns]::GetHostEntry($env:COMPUTERNAME).HostName
+        if ($n -eq $localFqdn) { return $true }
+        if ($n.Split('.')[0] -eq $localFqdn.Split('.')[0]) { return $true }
+    } catch { }
+    return $false
+}
+
 function Get-MachineCertificate {
     <#
     .SYNOPSIS
@@ -60,8 +86,10 @@ function Get-MachineCertificate {
         [switch]$IncludeRoots
     )
 
-    try {
-        $raw = Invoke-Command -ComputerName $ComputerName -ScriptBlock {
+    # Collect the stores locally when the target IS this machine (see
+    # Test-IsLocalCertHost) - otherwise the jump server can never report its own
+    # certificates, which is exactly the host an operator checks first.
+    $collectScript = {
             param($stores)
             foreach ($store in $stores) {
                 $path = "Cert:\LocalMachine\$store"
@@ -85,7 +113,14 @@ function Get-MachineCertificate {
                     }
                 }
             }
-        } -ArgumentList (, $Stores)
+    }
+
+    try {
+        $raw = if (Test-IsLocalCertHost -ComputerName $ComputerName) {
+            & $collectScript $Stores
+        } else {
+            Invoke-Command -ComputerName $ComputerName -ScriptBlock $collectScript -ArgumentList (, $Stores)
+        }
     } catch {
         return [pscustomobject]@{
             Source = 'MachineStore'; ComputerName = $ComputerName; Location = 'Cert:\LocalMachine'
@@ -449,6 +484,6 @@ function Format-CertificateReport {
     return $sb.ToString()
 }
 
-Export-ModuleMember -Function Get-MachineCertificate, Get-EndpointCertificate, `
+Export-ModuleMember -Function Get-MachineCertificate, Test-IsLocalCertHost, Get-EndpointCertificate, `
     Get-CaIssuedCertificate, Find-ExpiringCertificates, Format-CertificateReport, `
     ConvertTo-CertificateInventory
