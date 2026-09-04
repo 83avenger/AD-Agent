@@ -1,6 +1,8 @@
 # Master Deployment Guide — Full Solution
 
-**Start here.** The detail lives in seven other documents; this one is the running order, the
+**Already deployed and continuing from an older build?** Use **`RUNBOOK-CONTINUE.md`** instead — it starts from a running instance and works forward.
+
+**Start here for a fresh deployment.** The detail lives in seven other documents; this one is the running order, the
 dependencies between stages, and the consolidated references (environment variables, scheduled
 tasks, firewall) that are otherwise scattered.
 
