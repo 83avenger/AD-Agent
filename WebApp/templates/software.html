@@ -7,7 +7,9 @@
   <h1 style="font-size:1.6rem; font-weight:800; color:var(--brand-dark);">Software List</h1>
   <p style="color:var(--muted); font-size:.9rem; margin-top:.3rem;">
     Every installed-software record collected so far, across every device — from both
-    Discovery and Software Inventory scans. Updates automatically after each run.
+    Discovery and Software Inventory scans, <strong>accumulated across every run</strong>,
+    so inventorying one set of hosts no longer erases the last. A host that wasn't in the
+    latest run keeps its last known inventory, with the date it was collected.
   </p>
 </div>
 
@@ -15,27 +17,36 @@
 <div class="alert alert-demo">⚠ No scan snapshot exists yet — showing demo data.</div>
 {% endif %}
 
+{# Tiles link to the rows behind them - the number you are worried about should be the
+   way in, not something to retype into the filter box. #}
 <div class="score-grid">
-  <div class="score-card">
+  <a href="/software" class="score-card" style="text-decoration:none; color:inherit;">
     <div class="num">{{ host_count }}</div>
     <div class="lbl">Hosts with software collected</div>
-  </div>
-  <div class="score-card {{ 'crit' if vulnerable else 'good' }}">
+  </a>
+  <a href="/software?only=vulnerable" class="score-card {{ 'crit' if vulnerable else 'good' }}" style="text-decoration:none; color:inherit;">
     <div class="num">{{ vulnerable|length }}</div>
     <div class="lbl">Zero-day exposure hits</div>
-  </div>
-  <div class="score-card {{ 'warn' if issues else 'good' }}">
+  </a>
+  <a href="#collection-issues" class="score-card {{ 'warn' if issues else 'good' }}" style="text-decoration:none; color:inherit;">
     <div class="num">{{ issues|length }}</div>
     <div class="lbl">Hosts with collection issues</div>
-  </div>
+  </a>
   <div class="score-card">
     <div class="num">{{ software|length }}</div>
     <div class="lbl">Total software records</div>
   </div>
 </div>
 
+{% if only == 'vulnerable' %}
+<div class="alert alert-info">
+  Showing only hosts with a zero-day exposure hit.
+  <a href="/software" style="color:var(--accent);">Clear filter</a>
+</div>
+{% endif %}
+
 {% if issues %}
-<div class="card">
+<div class="card" id="collection-issues">
   <div class="card-header">
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
       <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
@@ -88,27 +99,51 @@
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
       <rect x="1" y="4" width="22" height="16" rx="2"/><line x1="1" y1="10" x2="23" y2="10"/>
     </svg>
-    All installed software ({{ software|length }})
+    Hosts ({{ host_rows|length }})
   </div>
-  <input type="text" id="swFilter" placeholder="Filter by computer, name, publisher…"
+  <input type="text" id="swFilter" placeholder="Filter by computer, software name, publisher…"
     style="width:100%; padding:.55rem .85rem; border:1px solid var(--border); border-radius:var(--radius);
       font-size:.875rem; margin-bottom:1rem;" onkeyup="filterSoftware()">
   <div class="tbl-wrap">
     <table id="swTable">
-      <thead><tr><th>Computer</th><th>Category</th><th>Name</th><th>Version</th><th>Publisher</th><th>Arch</th><th>Install date</th></tr></thead>
+      <thead><tr>
+        <th style="width:2rem;"></th><th>Computer</th><th>Category</th>
+        <th>Packages</th><th>Source</th><th>Last collected</th>
+      </tr></thead>
       <tbody>
-        {% for s in software %}
-        <tr>
-          <td>{{ s.ComputerName }}</td>
-          <td>{{ s.Category }}</td>
-          <td>{{ s.Name }}</td>
-          <td>{{ s.Version }}</td>
-          <td>{{ s.Publisher }}</td>
-          <td>{{ s.Architecture }}</td>
-          <td>{{ s.InstallDate }}</td>
+        {% for h in host_rows %}
+        <tr class="host-row" onclick="toggleHost('s{{ loop.index }}')" style="cursor:pointer;">
+          <td style="color:var(--muted);"><span id="caret-s{{ loop.index }}">&#9656;</span></td>
+          <td style="font-weight:600;">
+            {{ h.host }}
+            {% if h.vulnerable %}<span class="badge badge-critical" style="margin-left:.4rem;">Zero-day</span>{% endif %}
+          </td>
+          <td>{{ h.category or '—' }}</td>
+          <td style="text-align:right;">{{ h.packages|length }}</td>
+          <td style="font-size:.78rem; color:var(--muted);">{{ h.sources }}</td>
+          <td style="font-size:.78rem; color:var(--muted);">{{ h.last_seen[:16] if h.last_seen else '—' }}</td>
+        </tr>
+        <tr class="detail-row" id="s{{ loop.index }}" hidden>
+          <td colspan="6" style="background:var(--bg-subtle, #f8fafc);">
+            <table style="width:100%;">
+              <thead><tr><th>Name</th><th>Version</th><th>Publisher</th><th>Arch</th><th>Install date</th><th>First seen</th></tr></thead>
+              <tbody>
+                {% for s in h.packages %}
+                <tr>
+                  <td>{{ s.Name }}</td>
+                  <td>{{ s.Version or '—' }}</td>
+                  <td style="font-size:.82rem;">{{ s.Publisher or '—' }}</td>
+                  <td style="font-size:.82rem;">{{ s.Architecture or '—' }}</td>
+                  <td style="font-size:.82rem;">{{ s.InstallDate or '—' }}</td>
+                  <td style="font-size:.78rem; color:var(--muted);">{{ s.FirstSeen[:10] if s.FirstSeen else '—' }}</td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </td>
         </tr>
         {% else %}
-        <tr><td colspan="7" style="text-align:center; color:var(--muted);">No software collected yet — run a Discovery or Software Inventory scan.</td></tr>
+        <tr><td colspan="6" style="text-align:center; color:var(--muted);">No software collected yet — run a Discovery or Software Inventory scan.</td></tr>
         {% endfor %}
       </tbody>
     </table>
@@ -119,10 +154,22 @@
 
 {% block scripts %}
 <script>
+function toggleHost(id){
+  const row = document.getElementById(id);
+  const caret = document.getElementById('caret-' + id);
+  row.hidden = !row.hidden;
+  if (caret) caret.innerHTML = row.hidden ? '&#9656;' : '&#9662;';
+}
 function filterSoftware(){
   const q = document.getElementById('swFilter').value.toLowerCase();
-  document.querySelectorAll('#swTable tbody tr').forEach(row=>{
-    row.style.display = row.textContent.toLowerCase().includes(q) ? '' : 'none';
+  document.querySelectorAll('#swTable > tbody > tr.host-row').forEach(row=>{
+    const detail = row.nextElementSibling;
+    // Search the collapsed detail too, so a package name finds the hosts that have it
+    // without needing every host expanded first.
+    const hay = (row.textContent + ' ' + (detail ? detail.textContent : '')).toLowerCase();
+    const hit = hay.includes(q);
+    row.style.display = hit ? '' : 'none';
+    if (detail) detail.style.display = hit ? '' : 'none';
   });
 }
 </script>

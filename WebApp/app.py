@@ -1624,17 +1624,19 @@ def certificates_list():
 
 @app.route("/software")
 def software_list():
-    """Standalone, always-available view of every collected software record across every
-    device — not tied to a specific scan run, and not limited to clicking through devices
-    one at a time on the dashboard. Also surfaces WHY a device has nothing collected yet
-    (WinRM error, or skipped because WinRM wasn't seen open during discovery), pulling
-    together both the shared scan snapshot and the live discovery inventory."""
+    """Every installed-software record collected so far, across every device and every run.
+
+    Results merge into the permanent store rather than being read from the latest scan
+    snapshot: a snapshot only holds the hosts of the run that produced it, so inventorying
+    ten laptops used to erase the previous ten. A host absent from today's run keeps its
+    last known inventory, stamped with when it was collected.
+    """
     data, demo = _load_snapshot()
     all_sw = data.get("SoftwareInventory") or []
-    software = [s for s in all_sw if not s.get("Error")]
+    snap_software = [s for s in all_sw if not s.get("Error")]
     vulnerable = data.get("VulnerableSoftware") or []
 
-    issues = [
+    snap_issues = [
         {"ComputerName": s.get("ComputerName"), "Reason": s.get("Error")}
         for s in all_sw if s.get("Error")
     ]
@@ -1646,7 +1648,7 @@ def software_list():
     # not just in the dashboard drill-down. Snapshot (WinRM-collected) data wins for a
     # host present in both, since that's the run this page's vulnerability
     # cross-reference was actually computed against.
-    have_software_for = {s.get("ComputerName") for s in software if s.get("ComputerName")}
+    have_software_for = {s.get("ComputerName") for s in snap_software if s.get("ComputerName")}
     for a in assets:
         name = a.get("Name")
         pushed = a.get("Software")
@@ -1655,31 +1657,71 @@ def software_list():
         for item in pushed:
             if not isinstance(item, dict):
                 continue
-            software.append({
+            snap_software.append({
                 "ComputerName": name,
                 "Category":     a.get("AssetType") or "Unknown",
                 "Name":         item.get("Name"),
                 "Version":      item.get("Version"),
                 "Publisher":    item.get("Publisher"),
                 "InstallDate":  item.get("InstallDate"),
+                "Source":       "PushCollector",
             })
         have_software_for.add(name)
 
-    covered = {i["ComputerName"] for i in issues} | have_software_for
+    covered = {i["ComputerName"] for i in snap_issues} | have_software_for
     for a in assets:
         note = a.get("CollectionNote")
         name = a.get("Name")
         if note and name not in covered:
-            issues.append({"ComputerName": name, "Reason": note})
+            snap_issues.append({"ComputerName": name, "Reason": note})
             covered.add(name)
+
+    if demo:
+        software, issues = snap_software, snap_issues
+    else:
+        try:
+            assets_db.sync_software(STATE_DIR, snap_software, snap_issues)
+            software, issues = assets_db.load_all_software(STATE_DIR)
+        except Exception:
+            # A store problem must not blank the page - fall back to this run's data.
+            software, issues = snap_software, snap_issues
+
+    vuln_hosts = {v.get("ComputerName") for v in vulnerable if v.get("ComputerName")}
+    hosts: dict = {}
+    for s in software:
+        host = s.get("ComputerName") or "(unknown)"
+        h = hosts.setdefault(host, {"host": host, "packages": [], "category": s.get("Category"),
+                                    "last_seen": None, "sources": set()})
+        h["packages"].append(s)
+        if s.get("Source"):
+            h["sources"].add(s["Source"])
+        seen = s.get("LastSeen")
+        if seen and (h["last_seen"] is None or seen > h["last_seen"]):
+            h["last_seen"] = seen
+    for h in hosts.values():
+        h["packages"].sort(key=lambda x: ((x.get("Name") or "").lower(), x.get("Version") or ""))
+        h["vulnerable"] = h["host"] in vuln_hosts
+        h["sources"] = ", ".join(sorted(h["sources"])) or "-"
+
+    # Vulnerable hosts first: the reason to open this page in a hurry is a zero-day hit.
+    host_rows = sorted(hosts.values(), key=lambda h: (not h["vulnerable"], h["host"].lower()))
+
+    host_filter = (request.args.get("host") or "").strip().lower()
+    if host_filter:
+        host_rows = [h for h in host_rows if host_filter in h["host"].lower()]
+    if request.args.get("only") == "vulnerable":
+        host_rows = [h for h in host_rows if h["vulnerable"]]
 
     return render_template(
         "software.html",
         demo=demo,
         software=software,
+        host_rows=host_rows,
         vulnerable=vulnerable,
         issues=issues,
-        host_count=len({s.get("ComputerName") for s in software if s.get("ComputerName")}),
+        host_count=len(hosts),
+        only=request.args.get("only") or "",
+        host_filter=request.args.get("host") or "",
     )
 
 

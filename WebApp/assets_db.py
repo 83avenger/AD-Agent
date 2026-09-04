@@ -132,6 +132,38 @@ _SCHEMA_CERTIFICATES = """
     )
 """
 
+# Installed software, same reasoning as certificates: the scan snapshot only holds the
+# hosts of the run that produced it, so a software inventory of ten laptops erased the
+# previous ten. Keyed by (host, product, version) - version is part of the identity so an
+# upgrade shows as the new version replacing nothing, and last_seen tells you whether the
+# old one is genuinely still installed or just never re-scanned.
+_SCHEMA_SOFTWARE = """
+    CREATE TABLE IF NOT EXISTS software (
+        sw_key       TEXT PRIMARY KEY,
+        host         TEXT NOT NULL,
+        category     TEXT,
+        name         TEXT,
+        version      TEXT,
+        publisher    TEXT,
+        architecture TEXT,
+        install_date TEXT,
+        source       TEXT,
+        first_seen   TEXT NOT NULL,
+        last_seen    TEXT NOT NULL
+    )
+"""
+
+# Why a host has no software listed (WinRM error, or skipped because WinRM was never seen
+# open). Keyed by host so a host that later collects successfully clears its own row.
+_SCHEMA_SOFTWARE_ISSUES = """
+    CREATE TABLE IF NOT EXISTS software_issues (
+        host       TEXT PRIMARY KEY,
+        reason     TEXT,
+        first_seen TEXT NOT NULL,
+        last_seen  TEXT NOT NULL
+    )
+"""
+
 # Collection failures, keyed by target so a host that later succeeds replaces (and then
 # clears) its own error rather than leaving a permanent scar on the page.
 _SCHEMA_CERT_ERRORS = """
@@ -162,6 +194,8 @@ def _migrate(conn) -> None:
     cur.execute(_SCHEMA_CHECKIN_DAYS)
     cur.execute(_SCHEMA_CERTIFICATES)
     cur.execute(_SCHEMA_CERT_ERRORS)
+    cur.execute(_SCHEMA_SOFTWARE)
+    cur.execute(_SCHEMA_SOFTWARE_ISSUES)
 
     have = _existing_columns(conn)
     missing = {c: t for c, t in _ADDED_COLUMNS.items() if c not in have}
@@ -700,6 +734,98 @@ def delete_certificate(state_dir: Path, thumbprint: str) -> bool:
         deleted = cur.rowcount > 0
         conn.commit()
         return deleted
+    finally:
+        conn.close()
+
+
+def _software_key(host: str, name: str, version: str) -> str:
+    return "|".join(x.strip().lower() for x in (host or "", name or "", version or ""))
+
+
+def sync_software(state_dir: Path, records: list, issues: list) -> None:
+    """Merge one run's software inventory into the permanent store.
+
+    Like certificates, nothing is deleted: a host that wasn't in this run keeps its last
+    known inventory, stamped with when it was collected, rather than vanishing from the
+    page until the next full sweep."""
+    now = datetime.utcnow().isoformat()
+    conn = get_connection(state_dir)
+    try:
+        cur = conn.cursor()
+        ph = "%s" if BACKEND == "postgres" else "?"
+        collected_hosts = set()
+
+        for s in records or []:
+            host = (s.get("ComputerName") or "").strip()
+            name = (s.get("Name") or "").strip()
+            if not host or not name:
+                continue
+            collected_hosts.add(host)
+            key = _software_key(host, name, s.get("Version") or "")
+            row = (
+                host, s.get("Category"), name, s.get("Version"), s.get("Publisher"),
+                s.get("Architecture"), s.get("InstallDate"), s.get("Source"), now,
+            )
+            cur.execute(f"SELECT 1 FROM software WHERE sw_key = {ph}", (key,))
+            if cur.fetchone():
+                cur.execute(f"""
+                    UPDATE software SET host={ph}, category={ph}, name={ph}, version={ph},
+                        publisher={ph}, architecture={ph}, install_date={ph}, source={ph},
+                        last_seen={ph}
+                    WHERE sw_key={ph}
+                """, row + (key,))
+            else:
+                cur.execute(f"""
+                    INSERT INTO software (host, category, name, version, publisher,
+                        architecture, install_date, source, last_seen, sw_key, first_seen)
+                    VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph})
+                """, row + (key, now))
+
+        # A host that just returned software is not failing any more.
+        for host in collected_hosts:
+            cur.execute(f"DELETE FROM software_issues WHERE host = {ph}", (host,))
+
+        for i in issues or []:
+            host = (i.get("ComputerName") or "").strip()
+            if not host or host in collected_hosts:
+                continue
+            cur.execute(f"SELECT 1 FROM software_issues WHERE host = {ph}", (host,))
+            if cur.fetchone():
+                cur.execute(f"UPDATE software_issues SET reason={ph}, last_seen={ph} WHERE host={ph}",
+                            (i.get("Reason"), now, host))
+            else:
+                cur.execute(f"INSERT INTO software_issues (host, reason, first_seen, last_seen)"
+                            f" VALUES ({ph}, {ph}, {ph}, {ph})", (host, i.get("Reason"), now, now))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def load_all_software(state_dir: Path) -> tuple[list, list]:
+    """Every software record ever collected, plus the hosts currently failing to collect."""
+    conn = get_connection(state_dir)
+    try:
+        if BACKEND == "postgres":
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            cur.execute("SELECT * FROM software ORDER BY host, name, version")
+            sw_rows = cur.fetchall()
+            cur.execute("SELECT * FROM software_issues ORDER BY host")
+            issue_rows = cur.fetchall()
+        else:
+            sw_rows = conn.execute("SELECT * FROM software ORDER BY host, name, version").fetchall()
+            issue_rows = conn.execute("SELECT * FROM software_issues ORDER BY host").fetchall()
+
+        software = [{
+            "ComputerName": r["host"], "Category": r["category"], "Name": r["name"],
+            "Version": r["version"], "Publisher": r["publisher"],
+            "Architecture": r["architecture"], "InstallDate": r["install_date"],
+            "Source": r["source"], "FirstSeen": r["first_seen"], "LastSeen": r["last_seen"],
+        } for r in sw_rows]
+        issues = [{
+            "ComputerName": r["host"], "Reason": r["reason"],
+            "FirstSeen": r["first_seen"], "LastSeen": r["last_seen"],
+        } for r in issue_rows]
+        return software, issues
     finally:
         conn.close()
 
