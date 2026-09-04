@@ -30,7 +30,7 @@
       id="domain_controllers"
       name="domain_controllers"
       rows="4"
-      placeholder="dc01.contoso.com&#10;server01.contoso.com&#10;10.15.2.207&#10;(one per line, or comma-separated)"
+      placeholder="dc01.amg.local&#10;server01.amg.local&#10;10.15.2.207&#10;10.15.2.1 - 10.15.2.50&#10;10.15.2.0/24&#10;(one per line, or comma-separated)"
       required
     >{{ scan_config.dcs | join('\n') if scan_config else '' }}</textarea>
     <p style="font-size:.78rem; color:var(--muted); margin-top:.3rem;">
@@ -38,6 +38,10 @@
       below are run against them. Anomaly scanning expects Domain Controllers (it reads DC event
       logs); certificate, compliance and software scans work against any reachable Windows host.
       The scan server needs WinRM access to each target.
+      Hostnames, single IPs, CIDRs (<code>10.15.2.0/24</code>) and inclusive ranges
+      (<code>10.15.2.1 - 10.15.2.50</code>, or the short <code>10.15.2.1-50</code>) are all accepted,
+      up to 1024 targets per scan. IP targets are reverse-resolved to their host name before WinRM,
+      which will not authenticate against a bare address.
     </p>
   </div>
 

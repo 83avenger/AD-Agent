@@ -43,10 +43,39 @@ function Test-IsLocalComputer {
     $short = $ComputerName.Split('.')[0]
     if ($short -ieq $env:COMPUTERNAME) { return $true }
     try {
-        $fqdn = [System.Net.Dns]::GetHostEntry([System.Net.Dns]::GetHostName()).HostName
-        if ($ComputerName -ieq $fqdn) { return $true }
+        $entry = [System.Net.Dns]::GetHostEntry([System.Net.Dns]::GetHostName())
+        if ($ComputerName -ieq $entry.HostName) { return $true }
+        # Targets increasingly arrive as bare IPs - a discovery scan or a typed IP range
+        # produces nothing else - and an IP never matches a name comparison, so without
+        # this the local machine is treated as remote and WinRM refuses it outright.
+        if ($entry.AddressList | Where-Object { $_.IPAddressToString -eq $ComputerName.Trim() }) { return $true }
     } catch { }
     return $false
+}
+
+function Resolve-WinRmTargetName {
+    <#
+    .SYNOPSIS
+        Turns an IP address into a resolvable host name for WinRM.
+    .DESCRIPTION
+        WinRM will not do Kerberos against a bare IP: it fails with "Default
+        authentication may be used with an IP address under the following conditions:
+        the transport is HTTPS or the destination is in the TrustedHosts list".
+        Reverse-resolving first makes the same target work with the authentication
+        already configured, instead of requiring a TrustedHosts edit on every server.
+        Names, and IPs with no PTR record, are returned unchanged.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$ComputerName)
+
+    $n = $ComputerName.Trim()
+    $parsed = [System.Net.IPAddress]::None
+    if (-not [System.Net.IPAddress]::TryParse($n, [ref]$parsed)) { return $n }
+    try {
+        $resolved = [System.Net.Dns]::GetHostEntry($n).HostName
+        if ($resolved -and $resolved -ne $n) { return $resolved }
+    } catch { }
+    return $n
 }
 
 function Get-DeviceCategory {
@@ -72,7 +101,7 @@ function Get-DeviceCategory {
         $chassis = if (Test-IsLocalComputer -ComputerName $ComputerName) {
             & $chassisScript
         } else {
-            Invoke-Command -ComputerName $ComputerName -ScriptBlock $chassisScript
+            Invoke-Command -ComputerName (Resolve-WinRmTargetName -ComputerName $ComputerName) -ScriptBlock $chassisScript
         }
         $codes = @($chassis)
         if ($codes | Where-Object { $_ -in $script:ServerChassisTypes })  { return 'Server' }
@@ -126,7 +155,7 @@ function Get-InstalledSoftware {
         $raw = if (Test-IsLocalComputer -ComputerName $ComputerName) {
             & $collectScript
         } else {
-            Invoke-Command -ComputerName $ComputerName -ScriptBlock $collectScript
+            Invoke-Command -ComputerName (Resolve-WinRmTargetName -ComputerName $ComputerName) -ScriptBlock $collectScript
         }
     } catch {
         return [pscustomobject]@{
@@ -261,4 +290,5 @@ function Format-SoftwareInventoryReport {
 }
 
 Export-ModuleMember -Function Get-DeviceCategory, Get-InstalledSoftware, `
-    Find-VulnerableInstalledSoftware, Format-SoftwareInventoryReport, Test-IsLocalComputer
+    Find-VulnerableInstalledSoftware, Format-SoftwareInventoryReport, Test-IsLocalComputer, `
+    Resolve-WinRmTargetName

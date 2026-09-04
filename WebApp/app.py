@@ -1760,10 +1760,61 @@ def _discovery_job(from_ad, cidr, warp_cidr, skip_categorize, skip_software) -> 
     return {"result": result}
 
 
+# Scan targets can be typed the same way discovery targets are: a hostname, an IP, a
+# CIDR, or an inclusive dash range. Expand-Cidr already understood ranges on the
+# discovery side, so a range that worked in one box and was rejected in the other was
+# purely an inconsistency between the two entry points, not a real limit.
+_MAX_SCAN_TARGETS = 1024
+
+
+def _expand_scan_targets(raw: str) -> tuple[list[str], str | None]:
+    """Split the targets box into individual hosts, expanding CIDRs and a-b ranges.
+
+    Returns (targets, error). Hostnames pass through untouched - only things that
+    actually parse as an address or network are expanded, so 'dc01.amg.local' is never
+    mistaken for a malformed range.
+    """
+    out: list[str] = []
+    for part in [p.strip() for p in raw.replace("\n", ",").split(",") if p.strip()]:
+        try:
+            if "/" in part:
+                net = ipaddress.ip_network(part, strict=False)
+                out += [str(ip) for ip in net.hosts()] or [str(net.network_address)]
+                continue
+            if "-" in part and part.count("-") == 1:
+                lo_s, hi_s = (x.strip() for x in part.split("-"))
+                # A short form is convenient and unambiguous: 10.15.2.1-50.
+                if hi_s.isdigit() and lo_s.count(".") == 3:
+                    hi_s = lo_s.rsplit(".", 1)[0] + "." + hi_s
+                lo, hi = ipaddress.ip_address(lo_s), ipaddress.ip_address(hi_s)
+                if hi < lo:
+                    return [], f"Invalid range '{part}': the end address is lower than the start."
+                if int(hi) - int(lo) + 1 > _MAX_SCAN_TARGETS:
+                    return [], (f"Range '{part}' covers {int(hi) - int(lo) + 1} addresses; "
+                                f"the limit for a scan is {_MAX_SCAN_TARGETS}.")
+                out += [str(ipaddress.ip_address(n)) for n in range(int(lo), int(hi) + 1)]
+                continue
+        except ValueError:
+            # Not an address/network - a hostname that happens to contain '-' or '/'.
+            pass
+        out.append(part)
+
+    if len(out) > _MAX_SCAN_TARGETS:
+        return [], f"{len(out)} targets requested; the limit for a single scan is {_MAX_SCAN_TARGETS}."
+    seen, uniq = set(), []
+    for t in out:
+        if t.lower() not in seen:
+            seen.add(t.lower())
+            uniq.append(t)
+    return uniq, None
+
+
 @app.route("/scan", methods=["POST"])
 def scan():
     raw_dcs  = request.form.get("domain_controllers", "").strip()
-    dcs      = [d.strip() for d in raw_dcs.replace("\n", ",").split(",") if d.strip()]
+    dcs, target_err = _expand_scan_targets(raw_dcs)
+    if target_err:
+        return render_template("index.html", error=target_err)
     scan_types = request.form.getlist("scan_types")  # ["anomaly", "compliance"]
     frameworks = request.form.getlist("frameworks")   # ["CIS", "NIST", "ISO"]
     severities = request.form.getlist("severities")   # ["Critical", "High", ...]
