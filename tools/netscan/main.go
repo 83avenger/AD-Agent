@@ -85,6 +85,39 @@ func expandTarget(target string) ([]string, error) {
 		return nil, nil
 	}
 
+	// Inclusive dash range: 10.15.2.1-10.15.2.50 (spaces optional). Kept in sync with
+	// Expand-Cidr in DCAnomalyAgent.Discovery.psm1 - if only one of the two understood
+	// ranges, a scan would succeed or fail purely on whether this accelerator happens to
+	// be built on that server, which is exactly the kind of inconsistency that wastes an
+	// afternoon.
+	if i := strings.Index(target, "-"); i > 0 {
+		startStr := strings.TrimSpace(target[:i])
+		endStr := strings.TrimSpace(target[i+1:])
+		start, end := net.ParseIP(startStr), net.ParseIP(endStr)
+		if start != nil && end != nil {
+			s4, e4 := start.To4(), end.To4()
+			if s4 == nil || e4 == nil {
+				return nil, fmt.Errorf("only IPv4 ranges are supported: %s", target)
+			}
+			startInt := uint32(s4[0])<<24 | uint32(s4[1])<<16 | uint32(s4[2])<<8 | uint32(s4[3])
+			endInt := uint32(e4[0])<<24 | uint32(e4[1])<<16 | uint32(e4[2])<<8 | uint32(e4[3])
+			if endInt < startInt {
+				return nil, fmt.Errorf("invalid range %s: end address is lower than the start", target)
+			}
+			if endInt-startInt+1 > 65536 {
+				return nil, fmt.Errorf("range %s covers %d addresses, more than the supported maximum of 65536", target, endInt-startInt+1)
+			}
+			var ips []string
+			for n := startInt; ; n++ {
+				ips = append(ips, net.IPv4(byte(n>>24), byte(n>>16), byte(n>>8), byte(n)).String())
+				if n == endInt {
+					break // guards against uint32 overflow when endInt is 255.255.255.255
+				}
+			}
+			return ips, nil
+		}
+	}
+
 	if !strings.Contains(target, "/") {
 		if ip := net.ParseIP(target); ip != nil {
 			if v4 := ip.To4(); v4 != nil {

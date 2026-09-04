@@ -90,6 +90,10 @@ function Expand-Cidr {
     .SYNOPSIS
         Expand a CIDR (e.g. 10.0.0.0/24) into individual host IPs. Supports /16-/32.
         A bare IP with no /prefix (e.g. 10.0.0.5) is treated as /32 - a single host.
+        An inclusive dash range (e.g. 10.15.2.1 - 10.15.2.50, spaces optional) is also
+        accepted. Ranges are how people usually describe a scan scope, and arbitrary
+        ones frequently have no single CIDR equivalent - .1 to .50 needs five separate
+        blocks - so requiring CIDR would mean hand-computing them.
         A hostname (anything that isn't IP/CIDR-shaped) is resolved via DNS to its
         current IP(s) at scan time - useful for targeting a specific device whose IP
         changes on every DHCP renewal (e.g. a laptop) instead of a fixed address that
@@ -97,6 +101,28 @@ function Expand-Cidr {
     #>
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Cidr)
+
+    $Cidr = $Cidr.Trim()
+
+    # Dash range: 10.15.2.1-10.15.2.50 / 10.15.2.1 - 10.15.2.50
+    if ($Cidr -match '^(\d{1,3}(?:\.\d{1,3}){3})\s*-\s*(\d{1,3}(?:\.\d{1,3}){3})$') {
+        $startIp = $Matches[1]; $endIp = $Matches[2]
+        $sb = [System.Net.IPAddress]::Parse($startIp).GetAddressBytes(); [Array]::Reverse($sb)
+        $eb = [System.Net.IPAddress]::Parse($endIp).GetAddressBytes();   [Array]::Reverse($eb)
+        $startInt = [BitConverter]::ToUInt32($sb, 0)
+        $endInt   = [BitConverter]::ToUInt32($eb, 0)
+        if ($endInt -lt $startInt) { throw "Invalid range '$Cidr': end address is lower than the start." }
+        # Same ceiling the /16 prefix limit imposes, so a mistyped range can't turn into
+        # a multi-million-host sweep against production.
+        $rangeCount = ($endInt - $startInt) + 1
+        if ($rangeCount -gt 65536) { throw "Range '$Cidr' covers $rangeCount addresses - more than the supported maximum of 65536 (equivalent to a /16)." }
+        for ($i = $startInt; $i -le $endInt; $i++) {
+            $b = [BitConverter]::GetBytes([uint32]$i)
+            [Array]::Reverse($b)
+            ([System.Net.IPAddress]::new($b)).ToString()
+        }
+        return
+    }
 
     if ($Cidr -match '^(\d{1,3}(?:\.\d{1,3}){3})$') {
         $Cidr = "$Cidr/32"
