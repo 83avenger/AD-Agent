@@ -63,11 +63,45 @@ function Test-IsLocalCertHost {
     if ($n -in @('localhost', '.', '127.0.0.1', '::1')) { return $true }
     if ($n -eq $env:COMPUTERNAME) { return $true }
     try {
-        $localFqdn = [System.Net.Dns]::GetHostEntry($env:COMPUTERNAME).HostName
+        $entry = [System.Net.Dns]::GetHostEntry($env:COMPUTERNAME)
+        $localFqdn = $entry.HostName
         if ($n -eq $localFqdn) { return $true }
         if ($n.Split('.')[0] -eq $localFqdn.Split('.')[0]) { return $true }
+        # Targets often arrive as IP addresses (a discovery scan or a typed range
+        # produces nothing else), and an IP never matches a name comparison. Worse,
+        # WinRM refuses an IP target outright - "Default authentication may be used
+        # with an IP address under the following conditions..." - so without this the
+        # local host fails to report its own certificates purely because it was named
+        # by address rather than by hostname.
+        if ($entry.AddressList | Where-Object { $_.IPAddressToString -eq $n }) { return $true }
     } catch { }
     return $false
+}
+
+function Resolve-CertTargetName {
+    <#
+    .SYNOPSIS
+        Turns an IP address into a resolvable host name for WinRM.
+    .DESCRIPTION
+        WinRM will not do Kerberos against a bare IP address; it fails with
+        "Default authentication may be used with an IP address under the following
+        conditions: the transport is HTTPS or the destination is in the TrustedHosts
+        list". Reverse-resolving to the FQDN first makes the same target work with the
+        authentication that is already configured, instead of asking every operator to
+        edit TrustedHosts. Non-IP input, and IPs with no PTR record, are returned
+        unchanged so behavior is never worse than before.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$ComputerName)
+
+    $n = $ComputerName.Trim()
+    $parsed = [System.Net.IPAddress]::None
+    if (-not [System.Net.IPAddress]::TryParse($n, [ref]$parsed)) { return $n }
+    try {
+        $host_ = [System.Net.Dns]::GetHostEntry($n).HostName
+        if ($host_ -and $host_ -ne $n) { return $host_ }
+    } catch { }
+    return $n
 }
 
 function Get-MachineCertificate {
@@ -119,7 +153,8 @@ function Get-MachineCertificate {
         $raw = if (Test-IsLocalCertHost -ComputerName $ComputerName) {
             & $collectScript $Stores
         } else {
-            Invoke-Command -ComputerName $ComputerName -ScriptBlock $collectScript -ArgumentList (, $Stores)
+            Invoke-Command -ComputerName (Resolve-CertTargetName -ComputerName $ComputerName) `
+                -ScriptBlock $collectScript -ArgumentList (, $Stores)
         }
     } catch {
         return [pscustomobject]@{
@@ -484,6 +519,7 @@ function Format-CertificateReport {
     return $sb.ToString()
 }
 
-Export-ModuleMember -Function Get-MachineCertificate, Test-IsLocalCertHost, Get-EndpointCertificate, `
+Export-ModuleMember -Function Get-MachineCertificate, Test-IsLocalCertHost, `
+    Resolve-CertTargetName, Get-EndpointCertificate, `
     Get-CaIssuedCertificate, Find-ExpiringCertificates, Format-CertificateReport, `
     ConvertTo-CertificateInventory
