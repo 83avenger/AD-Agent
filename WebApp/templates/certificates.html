@@ -24,6 +24,14 @@
   threshold — a certificate valid for another year or two will <em>not</em> appear below yet.
   Re-run a <strong>Certificate Scan</strong> to populate the complete inventory.
 </div>
+{% elif not certs and errors %}
+<div class="alert alert-demo">
+  <strong>No certificates were read — every target failed to collect.</strong>
+  The {{ errors|length }} row(s) below are collection failures, not certificates.
+  Common causes: a TLS endpoint that doesn't exist (the shipped endpoints file lists
+  <code>contoso.com</code> placeholders — edit or empty it), or WinRM being unreachable
+  on the target host.
+</div>
 {% elif not certs %}
 <div class="alert alert-info">
   No certificate data yet. Run a <strong>Certificate Scan</strong> from the
@@ -53,7 +61,36 @@
     <div class="num">{{ host_count }}</div>
     <div class="lbl">Host(s) / endpoint(s)</div>
   </div>
+  <div class="score-card {{ 'warn' if errors else 'good' }}">
+    <div class="num">{{ errors|length }}</div>
+    <div class="lbl">Collection failures</div>
+  </div>
 </div>
+
+{% if errors %}
+<div class="card">
+  <div class="card-header">Collection failures ({{ errors|length }})</div>
+  <p style="color:var(--muted); font-size:.82rem; margin:-.4rem 0 .8rem;">
+    These targets returned no certificate at all. They are <em>not</em> expiring
+    certificates — there is nothing here to renew, only a host or endpoint to make
+    reachable.
+  </p>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>Target</th><th>Source</th><th>Reason</th></tr></thead>
+      <tbody>
+        {% for e in errors %}
+        <tr>
+          <td style="font-size:.8rem;">{{ e.Locations or e.ComputerName or '—' }}</td>
+          <td style="font-size:.78rem; color:var(--muted);">{{ e.Sources or '—' }}</td>
+          <td style="font-size:.78rem;">{{ e.CollectionErrors or 'Unknown error' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
 
 {% if by_issuer %}
 <div class="card">
@@ -97,6 +134,8 @@
               <span class="badge badge-critical">Expired</span>
             {% elif c.Status == 'Expiring' %}
               <span class="badge badge-high">Expiring</span>
+            {% elif c.Status == 'Unknown' %}
+              <span class="badge badge-low">Unknown</span>
             {% else %}
               <span class="badge" style="background:var(--success); color:white;">Valid</span>
             {% endif %}

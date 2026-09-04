@@ -12,11 +12,15 @@
     # validate the trust chain, so self-signed and already-expired certs are
     # still reported.
     # -------------------------------------------------------------------------
+    # Empty by default. This list used to ship with contoso.com examples in it, which
+    # every certificate scan then dutifully tried to reach - producing five guaranteed
+    # collection failures on a fresh install and burying whatever real certificates were
+    # found. Uncomment and edit the shapes below for your own endpoints.
     Endpoints = @(
-        @{ Host = 'portal.contoso.com';   Port = 443;  Name = 'Public portal (behind LB)' }
-        @{ Host = 'mail.contoso.com';     Port = 443;  Name = 'OWA' }
-        @{ Host = 'mail.contoso.com';     Port = 587;  Name = 'SMTP submission (STARTTLS)' }
-        @{ Host = 'vpn.contoso.com';      Port = 443;  Name = 'VPN appliance' }
-        @{ Host = 'rdgw.contoso.com';     Port = 3389; Name = 'RD Gateway' }
+        # @{ Host = 'portal.example.local'; Port = 443;  Name = 'Public portal (behind LB)' }
+        # @{ Host = 'mail.example.local';   Port = 443;  Name = 'OWA' }
+        # @{ Host = 'mail.example.local';   Port = 587;  Name = 'SMTP submission (STARTTLS)' }
+        # @{ Host = 'vpn.example.local';    Port = 443;  Name = 'VPN appliance' }
+        # @{ Host = 'rdgw.example.local';   Port = 3389; Name = 'RD Gateway' }
     )
 }

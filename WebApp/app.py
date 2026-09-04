@@ -1502,16 +1502,39 @@ def certificates_list():
         certs = data.get("ExpiringCertificates") or []
         legacy_only = True
 
+    # Find-ExpiringCertificates emits unreachable hosts as pseudo-findings with a
+    # '(collection error)' subject and no NotAfter. They are failures to report, not
+    # certificates: counting them, dating them or badging them "Expiring" says a host
+    # has a certificate about to lapse when what actually happened is that nothing
+    # could be read from it at all. Split them out and show the error text instead.
+    errors = [
+        c for c in certs
+        if c.get("CollectionErrors") or c.get("Subject") == "(collection error)"
+    ]
+    certs = [c for c in certs if c not in errors]
+
     counts = {"Expired": 0, "Expiring": 0, "Valid": 0}
     by_issuer: dict = {}
     hosts = set()
+    for c in errors:
+        for h in str(c.get("ComputerName") or c.get("Locations") or "").split(","):
+            h = h.split("[")[0].strip()
+            if h:
+                hosts.add(h)
     for c in certs:
         days = c.get("DaysRemaining")
         status = c.get("Status")
         if not status:
             # ExpiringCertificates rows have no Status - derive one so the legacy
             # fallback renders consistently.
-            status = "Expired" if (days is not None and days < 0) else "Expiring"
+            if days is None:
+                status = "Unknown"
+            elif days < 0:
+                status = "Expired"
+            elif days <= CERT_THRESHOLD_DAYS:
+                status = "Expiring"
+            else:
+                status = "Valid"
             c["Status"] = status
         if status in counts:
             counts[status] += 1
@@ -1521,10 +1544,16 @@ def certificates_list():
             if h.strip():
                 hosts.add(h.strip())
 
+    # Only claim "your snapshot predates the inventory feature" when the legacy list
+    # actually held certificates. A legacy list of nothing but collection errors means
+    # the scan reached no host, which is a different problem with a different fix.
+    legacy_only = legacy_only and bool(certs)
+
     return render_template(
         "certificates.html",
         demo=demo,
         certs=certs,
+        errors=errors,
         total=len(certs),
         counts=counts,
         host_count=len(hosts),
