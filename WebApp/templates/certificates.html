@@ -6,10 +6,10 @@
 <div style="margin: 1.5rem 0 .5rem;">
   <h1 style="font-size:1.6rem; font-weight:800; color:var(--brand-dark);">Certificate Inventory</h1>
   <p style="color:var(--muted); font-size:.9rem; margin-top:.3rem;">
-    Every certificate found on scanned hosts, TLS endpoints and the CA — <strong>including ones
-    that aren't expiring</strong>. The dashboard's certificate view only shows those inside the
-    {{ threshold_days }}-day alert threshold; this answers the different question of whether a
-    host has a certificate at all, which one, and who issued it.
+    Every certificate found on any scanned host, TLS endpoint or the CA — <strong>including ones
+    that aren't expiring</strong>, and <strong>accumulated across every scan</strong>, so scanning
+    one server no longer erases what is known about the others. Days remaining are recalculated
+    on each page load, not read back from the scan that found the certificate.
   </p>
 </div>
 
@@ -26,11 +26,10 @@
 </div>
 {% elif not certs and errors %}
 <div class="alert alert-demo">
-  <strong>No certificates were read — every target failed to collect.</strong>
+  <strong>No certificates recorded — every target failed to collect.</strong>
   The {{ errors|length }} row(s) below are collection failures, not certificates.
-  Common causes: a TLS endpoint that doesn't exist (the shipped endpoints file lists
-  <code>contoso.com</code> placeholders — edit or empty it), or WinRM being unreachable
-  on the target host.
+  Common causes: a TLS endpoint that doesn't exist (check
+  <code>Config\certificate-endpoints.psd1</code>), or WinRM being unreachable on the target host.
 </div>
 {% elif not certs %}
 <div class="alert alert-info">
@@ -40,55 +39,39 @@
 </div>
 {% endif %}
 
+{# Tiles are links: the number you are worried about should take you to the rows behind
+   it, rather than leaving you to retype it into the filter box. #}
 <div class="score-grid">
-  <div class="score-card">
+  <a href="/certificates" class="score-card {{ 'sel' if not status_filter }}" style="text-decoration:none; color:inherit;">
     <div class="num">{{ total }}</div>
     <div class="lbl">Certificates found</div>
-  </div>
-  <div class="score-card {{ 'crit' if counts.Expired else 'good' }}">
+  </a>
+  <a href="/certificates?status=Expired" class="score-card {{ 'crit' if counts.Expired else 'good' }}" style="text-decoration:none; color:inherit;">
     <div class="num">{{ counts.Expired }}</div>
     <div class="lbl">Expired</div>
-  </div>
-  <div class="score-card {{ 'warn' if counts.Expiring else 'good' }}">
+  </a>
+  <a href="/certificates?status=Expiring" class="score-card {{ 'warn' if counts.Expiring else 'good' }}" style="text-decoration:none; color:inherit;">
     <div class="num">{{ counts.Expiring }}</div>
     <div class="lbl">Expiring &le; {{ threshold_days }}d</div>
-  </div>
-  <div class="score-card good">
+  </a>
+  <a href="/certificates?status=Valid" class="score-card good" style="text-decoration:none; color:inherit;">
     <div class="num">{{ counts.Valid }}</div>
     <div class="lbl">Valid</div>
-  </div>
+  </a>
   <div class="score-card">
     <div class="num">{{ host_count }}</div>
     <div class="lbl">Host(s) / endpoint(s)</div>
   </div>
-  <div class="score-card {{ 'warn' if errors else 'good' }}">
+  <a href="#collection-failures" class="score-card {{ 'warn' if errors else 'good' }}" style="text-decoration:none; color:inherit;">
     <div class="num">{{ errors|length }}</div>
     <div class="lbl">Collection failures</div>
-  </div>
+  </a>
 </div>
 
-{% if errors %}
-<div class="card">
-  <div class="card-header">Collection failures ({{ errors|length }})</div>
-  <p style="color:var(--muted); font-size:.82rem; margin:-.4rem 0 .8rem;">
-    These targets returned no certificate at all. They are <em>not</em> expiring
-    certificates — there is nothing here to renew, only a host or endpoint to make
-    reachable.
-  </p>
-  <div class="tbl-wrap">
-    <table>
-      <thead><tr><th>Target</th><th>Source</th><th>Reason</th></tr></thead>
-      <tbody>
-        {% for e in errors %}
-        <tr>
-          <td style="font-size:.8rem;">{{ e.Locations or e.ComputerName or '—' }}</td>
-          <td style="font-size:.78rem; color:var(--muted);">{{ e.Sources or '—' }}</td>
-          <td style="font-size:.78rem;">{{ e.CollectionErrors or 'Unknown error' }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
+{% if status_filter %}
+<div class="alert alert-info">
+  Showing only hosts with at least one <strong>{{ status_filter }}</strong> certificate.
+  <a href="/certificates" style="color:var(--accent);">Clear filter</a>
 </div>
 {% endif %}
 
@@ -106,65 +89,127 @@
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
       <rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/>
     </svg>
-    All certificates ({{ total }})
+    Hosts ({{ host_rows|length }})
   </div>
-  <input type="text" id="certFilter" placeholder="Filter by subject, issuer, host, thumbprint…"
+  <input type="text" id="certFilter" placeholder="Filter by host, subject, issuer, thumbprint…"
     style="width:100%; padding:.55rem .85rem; border:1px solid var(--border); border-radius:var(--radius);
       font-size:.875rem; margin-bottom:1rem;" onkeyup="filterCerts()">
   <div class="tbl-wrap">
     <table id="certTable">
       <thead><tr>
-        <th>Subject</th><th>Issuer</th><th>Host / location</th>
-        <th>Expires</th><th>Days left</th><th>Status</th><th>Source</th>
+        <th style="width:2rem;"></th><th>Host / endpoint</th><th>Certificates</th>
+        <th>Soonest expiry</th><th>Status</th><th>Last collected</th>
       </tr></thead>
       <tbody>
-        {% for c in certs %}
-        <tr>
+        {% for h in host_rows %}
+        {% set soonest = h.certs[0] %}
+        <tr class="host-row" onclick="toggleHost('h{{ loop.index }}')" style="cursor:pointer;">
+          <td style="color:var(--muted);"><span id="caret-h{{ loop.index }}">&#9656;</span></td>
+          <td style="font-weight:600;">{{ h.host }}</td>
+          <td style="text-align:right;">{{ h.certs|length }}</td>
+          <td style="white-space:nowrap;">{{ soonest.NotAfter[:10] if soonest.NotAfter else '—' }}</td>
           <td>
-            {{ c.Subject or '—' }}
-            {% if c.FriendlyName %}<div style="font-size:.72rem; color:var(--muted);">{{ c.FriendlyName }}</div>{% endif %}
-            {% if c.Id %}<div style="font-size:.68rem; color:var(--muted); font-family:monospace;">{{ c.Id }}</div>{% endif %}
+            {% if h.worst == 'Expired' %}<span class="badge badge-critical">Expired</span>
+            {% elif h.worst == 'Expiring' %}<span class="badge badge-high">Expiring</span>
+            {% elif h.worst == 'Unknown' %}<span class="badge badge-low">Unknown</span>
+            {% else %}<span class="badge" style="background:var(--success); color:white;">Valid</span>{% endif %}
           </td>
-          <td style="font-size:.8rem;">{{ c.Issuer or '—' }}</td>
-          <td style="font-size:.78rem;">{{ c.Locations or c.ComputerName or '—' }}</td>
-          <td style="white-space:nowrap;">{{ c.NotAfter[:10] if c.NotAfter else '—' }}</td>
-          <td style="text-align:right;">{{ c.DaysRemaining if c.DaysRemaining is not none else '—' }}</td>
-          <td>
-            {% if c.Status == 'Expired' %}
-              <span class="badge badge-critical">Expired</span>
-            {% elif c.Status == 'Expiring' %}
-              <span class="badge badge-high">Expiring</span>
-            {% elif c.Status == 'Unknown' %}
-              <span class="badge badge-low">Unknown</span>
-            {% else %}
-              <span class="badge" style="background:var(--success); color:white;">Valid</span>
-            {% endif %}
+          <td style="font-size:.78rem; color:var(--muted);">{{ h.last_seen[:16] if h.last_seen else '—' }}</td>
+        </tr>
+        <tr class="detail-row" id="h{{ loop.index }}" hidden>
+          <td colspan="6" style="background:var(--bg-subtle, #f8fafc);">
+            <table style="width:100%;">
+              <thead><tr>
+                <th>Subject</th><th>Issuer</th><th>Where</th>
+                <th>Expires</th><th>Days left</th><th>Status</th><th>Source</th>
+              </tr></thead>
+              <tbody>
+                {% for c in h.certs %}
+                <tr>
+                  <td>
+                    {{ c.Subject or '—' }}
+                    {% if c.FriendlyName %}<div style="font-size:.72rem; color:var(--muted);">{{ c.FriendlyName }}</div>{% endif %}
+                    {% if c.DnsNames %}<div style="font-size:.72rem; color:var(--muted);">SAN: {{ c.DnsNames }}</div>{% endif %}
+                    {% if c.Id %}<div style="font-size:.68rem; color:var(--muted); font-family:monospace;">{{ c.Id }}</div>{% endif %}
+                  </td>
+                  <td style="font-size:.8rem;">{{ c.Issuer or '—' }}</td>
+                  <td style="font-size:.78rem;">{{ c.Place or '—' }}</td>
+                  <td style="white-space:nowrap;">{{ c.NotAfter[:10] if c.NotAfter else '—' }}</td>
+                  <td style="text-align:right;">{{ c.DaysRemaining if c.DaysRemaining is not none else '—' }}</td>
+                  <td>
+                    {% if c.Status == 'Expired' %}<span class="badge badge-critical">Expired</span>
+                    {% elif c.Status == 'Expiring' %}<span class="badge badge-high">Expiring</span>
+                    {% elif c.Status == 'Unknown' %}<span class="badge badge-low">Unknown</span>
+                    {% else %}<span class="badge" style="background:var(--success); color:white;">Valid</span>{% endif %}
+                  </td>
+                  <td style="font-size:.78rem; color:var(--muted);">{{ c.Sources or '—' }}</td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
           </td>
-          <td style="font-size:.78rem; color:var(--muted);">{{ c.Sources or '—' }}</td>
         </tr>
         {% else %}
-        <tr><td colspan="7" style="text-align:center; color:var(--muted);">No certificates recorded yet.</td></tr>
+        <tr><td colspan="6" style="text-align:center; color:var(--muted);">No certificates recorded yet.</td></tr>
         {% endfor %}
       </tbody>
     </table>
   </div>
 </div>
 
+{% if errors %}
+<div class="card" id="collection-failures">
+  <div class="card-header">Collection failures ({{ errors|length }})</div>
+  <p style="color:var(--muted); font-size:.82rem; margin:-.4rem 0 .8rem;">
+    These targets returned no certificate at all on their last attempt. They are <em>not</em>
+    expiring certificates — there is nothing here to renew, only a host or endpoint to make
+    reachable. A row disappears once that target successfully returns a certificate.
+  </p>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>Target</th><th>Source</th><th>Reason</th><th>Failing since</th></tr></thead>
+      <tbody>
+        {% for e in errors %}
+        <tr>
+          <td style="font-size:.8rem;">{{ e.ComputerName or e.Locations or '—' }}</td>
+          <td style="font-size:.78rem; color:var(--muted);">{{ e.Sources or '—' }}</td>
+          <td style="font-size:.78rem;">{{ e.CollectionErrors or 'Unknown error' }}</td>
+          <td style="font-size:.78rem; color:var(--muted); white-space:nowrap;">{{ e.FirstSeen[:16] if e.FirstSeen else '—' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
 <p style="font-size:.8rem; color:var(--muted); margin-top:1rem;">
   Sources: <code>MachineStore</code> (certificate stores read over WinRM), <code>TlsEndpoint</code>
   (live TLS handshake against a configured host:port), <code>CA</code> (issued-certificate list from
   the Enterprise CA). A certificate present in several places is de-duplicated by thumbprint, with
-  every location listed.
+  every location listed under each host it was found on.
 </p>
 
 {% endblock %}
 
 {% block scripts %}
 <script>
+function toggleHost(id){
+  const row = document.getElementById(id);
+  const caret = document.getElementById('caret-' + id);
+  row.hidden = !row.hidden;
+  if (caret) caret.innerHTML = row.hidden ? '&#9656;' : '&#9662;';
+}
 function filterCerts(){
   const q = document.getElementById('certFilter').value.toLowerCase();
-  document.querySelectorAll('#certTable tbody tr').forEach(row=>{
-    row.style.display = row.textContent.toLowerCase().includes(q) ? '' : 'none';
+  document.querySelectorAll('#certTable > tbody > tr.host-row').forEach(row=>{
+    const detail = row.nextElementSibling;
+    // Match against the expanded detail too, so searching a thumbprint or subject finds
+    // the host holding it even while that host's rows are collapsed.
+    const hay = (row.textContent + ' ' + (detail ? detail.textContent : '')).toLowerCase();
+    const hit = hay.includes(q);
+    row.style.display = hit ? '' : 'none';
+    if (detail) detail.style.display = hit ? '' : 'none';
   });
 }
 </script>

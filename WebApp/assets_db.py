@@ -108,6 +108,43 @@ _SCHEMA_CHECKIN_DAYS = """
 """
 
 
+# Certificates found by any scan, ever. Without this the Certificates page could only
+# ever show the hosts in the most recent scan snapshot, so confirming one server's
+# binding wiped the record of every other server - you would have to re-scan the whole
+# estate every time to keep the page complete. Keyed by thumbprint (the certificate's
+# own identity), with every place it has been seen merged into locations_json rather
+# than overwritten, so the same wildcard cert on ten servers accumulates ten locations
+# across ten separate scans.
+_SCHEMA_CERTIFICATES = """
+    CREATE TABLE IF NOT EXISTS certificates (
+        thumbprint      TEXT PRIMARY KEY,
+        subject         TEXT,
+        issuer          TEXT,
+        not_before      TEXT,
+        not_after       TEXT,
+        friendly_name   TEXT,
+        dns_names       TEXT,
+        has_private_key INTEGER,
+        sources         TEXT,
+        locations_json  TEXT,
+        first_seen      TEXT NOT NULL,
+        updated_at      TEXT NOT NULL
+    )
+"""
+
+# Collection failures, keyed by target so a host that later succeeds replaces (and then
+# clears) its own error rather than leaving a permanent scar on the page.
+_SCHEMA_CERT_ERRORS = """
+    CREATE TABLE IF NOT EXISTS cert_errors (
+        target     TEXT PRIMARY KEY,
+        source     TEXT,
+        reason     TEXT,
+        first_seen TEXT NOT NULL,
+        last_seen  TEXT NOT NULL
+    )
+"""
+
+
 def _existing_columns(conn) -> set:
     if BACKEND == "postgres":
         cur = conn.cursor()
@@ -123,6 +160,8 @@ def _migrate(conn) -> None:
     every connection: it's a cheap catalog read, and a no-op once the columns exist."""
     cur = conn.cursor()
     cur.execute(_SCHEMA_CHECKIN_DAYS)
+    cur.execute(_SCHEMA_CERTIFICATES)
+    cur.execute(_SCHEMA_CERT_ERRORS)
 
     have = _existing_columns(conn)
     missing = {c: t for c, t in _ADDED_COLUMNS.items() if c not in have}
@@ -491,6 +530,173 @@ def delete_asset(state_dir: Path, key: str) -> bool:
             cur.execute("DELETE FROM assets WHERE dedup_key = %s", (key,))
         else:
             cur.execute("DELETE FROM assets WHERE dedup_key = ?", (key,))
+        deleted = cur.rowcount > 0
+        conn.commit()
+        return deleted
+    finally:
+        conn.close()
+
+
+def _parse_locations(locations: str) -> dict:
+    """'host [Cert:\\LocalMachine\\My]; host2 [host2:443]' -> {host: place}.
+
+    PowerShell builds that string in Find-ExpiringCertificates/ConvertTo-CertificateInventory;
+    splitting it back out is what lets the UI group certificates under the host they live
+    on instead of showing one opaque line per certificate."""
+    out = {}
+    for part in (locations or "").split(";"):
+        part = part.strip()
+        if not part:
+            continue
+        if "[" in part:
+            host, place = part.split("[", 1)
+            out[host.strip() or "(unknown)"] = place.rstrip("]").strip()
+        else:
+            out[part] = ""
+    return out
+
+
+def sync_certificates(state_dir: Path, certs: list, errors: list, scan_time: str = "") -> None:
+    """Merge one scan's certificate results into the permanent store.
+
+    Never deletes a certificate: a host absent from this scan keeps everything already
+    known about it. Locations are unioned, not replaced, so scanning server B does not
+    erase the fact that the same certificate is also on server A."""
+    now = datetime.utcnow().isoformat()
+    seen_at = scan_time or now
+    conn = get_connection(state_dir)
+    try:
+        cur = conn.cursor()
+        ph = "%s" if BACKEND == "postgres" else "?"
+
+        for c in certs or []:
+            thumb = (c.get("Id") or c.get("Thumbprint") or "").strip().upper()
+            if not thumb:
+                continue
+            locations = _parse_locations(c.get("Locations") or "")
+            if not locations and c.get("ComputerName"):
+                locations = {str(c["ComputerName"]).strip(): ""}
+            incoming = {h: {"place": p, "last_seen": seen_at} for h, p in locations.items()}
+
+            cur.execute(f"SELECT locations_json, sources FROM certificates WHERE thumbprint = {ph}", (thumb,))
+            existing = cur.fetchone()
+            sources = {s.strip() for s in (c.get("Sources") or "").split(",") if s.strip()}
+            if existing:
+                prior_locs = existing[0] if not isinstance(existing, dict) else existing["locations_json"]
+                prior_src = existing[1] if not isinstance(existing, dict) else existing["sources"]
+                try:
+                    merged = json.loads(prior_locs) if prior_locs else {}
+                except ValueError:
+                    merged = {}
+                merged.update(incoming)
+                sources |= {s.strip() for s in (prior_src or "").split(",") if s.strip()}
+            else:
+                merged = incoming
+
+            row = (
+                c.get("Subject"), c.get("Issuer"), c.get("NotBefore"), c.get("NotAfter"),
+                c.get("FriendlyName"), c.get("DnsNames"),
+                1 if c.get("HasPrivateKey") else 0,
+                ", ".join(sorted(sources)), json.dumps(merged), now,
+            )
+            if existing:
+                cur.execute(f"""
+                    UPDATE certificates SET subject={ph}, issuer={ph}, not_before={ph}, not_after={ph},
+                        friendly_name={ph}, dns_names={ph}, has_private_key={ph}, sources={ph},
+                        locations_json={ph}, updated_at={ph}
+                    WHERE thumbprint={ph}
+                """, row + (thumb,))
+            else:
+                cur.execute(f"""
+                    INSERT INTO certificates (subject, issuer, not_before, not_after, friendly_name,
+                        dns_names, has_private_key, sources, locations_json, updated_at,
+                        thumbprint, first_seen)
+                    VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph})
+                """, row + (thumb, now))
+
+        # A target that just returned certificates is not failing any more - drop any
+        # stale error row for it, otherwise the failures table never empties.
+        for c in certs or []:
+            for h in _parse_locations(c.get("Locations") or ""):
+                cur.execute(f"DELETE FROM cert_errors WHERE target = {ph}", (h,))
+
+        for e in errors or []:
+            target = (e.get("ComputerName") or e.get("Locations") or "").split("[")[0].strip()
+            if not target:
+                continue
+            reason = e.get("CollectionErrors") or e.get("Error") or "Unknown error"
+            cur.execute(f"SELECT 1 FROM cert_errors WHERE target = {ph}", (target,))
+            if cur.fetchone():
+                cur.execute(
+                    f"UPDATE cert_errors SET source={ph}, reason={ph}, last_seen={ph} WHERE target={ph}",
+                    (e.get("Sources") or e.get("Source"), reason, now, target),
+                )
+            else:
+                cur.execute(
+                    f"INSERT INTO cert_errors (target, source, reason, first_seen, last_seen)"
+                    f" VALUES ({ph}, {ph}, {ph}, {ph}, {ph})",
+                    (target, e.get("Sources") or e.get("Source"), reason, now, now),
+                )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def load_all_certificates(state_dir: Path) -> tuple[list, list]:
+    """Every certificate ever collected, plus the currently-failing targets."""
+    conn = get_connection(state_dir)
+    try:
+        if BACKEND == "postgres":
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            cur.execute("SELECT * FROM certificates")
+            cert_rows = cur.fetchall()
+            cur.execute("SELECT * FROM cert_errors")
+            err_rows = cur.fetchall()
+        else:
+            cert_rows = conn.execute("SELECT * FROM certificates").fetchall()
+            err_rows = conn.execute("SELECT * FROM cert_errors").fetchall()
+
+        certs = []
+        for r in cert_rows:
+            get = (lambda k: r[k])
+            try:
+                locations = json.loads(get("locations_json") or "{}")
+            except ValueError:
+                locations = {}
+            certs.append({
+                "Id": get("thumbprint"),
+                "Subject": get("subject"),
+                "Issuer": get("issuer"),
+                "NotBefore": get("not_before"),
+                "NotAfter": get("not_after"),
+                "FriendlyName": get("friendly_name"),
+                "DnsNames": get("dns_names"),
+                "HasPrivateKey": bool(get("has_private_key")),
+                "Sources": get("sources"),
+                "LocationMap": locations,
+                "ComputerName": ", ".join(sorted(locations)),
+                "Locations": "; ".join(f"{h} [{v.get('place','')}]" for h, v in sorted(locations.items())),
+                "FirstSeen": get("first_seen"),
+                "UpdatedAt": get("updated_at"),
+            })
+        errors = [{
+            "ComputerName": r["target"], "Locations": r["target"],
+            "Sources": r["source"], "CollectionErrors": r["reason"],
+            "FirstSeen": r["first_seen"], "LastSeen": r["last_seen"],
+        } for r in err_rows]
+        return certs, errors
+    finally:
+        conn.close()
+
+
+def delete_certificate(state_dir: Path, thumbprint: str) -> bool:
+    """Remove one certificate from the permanent store (replaced cert, decommissioned
+    host). Nothing else prunes this table, so there has to be a way to take a row out."""
+    conn = get_connection(state_dir)
+    try:
+        cur = conn.cursor()
+        ph = "%s" if BACKEND == "postgres" else "?"
+        cur.execute(f"DELETE FROM certificates WHERE thumbprint = {ph}", (thumbprint.strip().upper(),))
         deleted = cur.rowcount > 0
         conn.commit()
         return deleted

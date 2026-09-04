@@ -9,6 +9,7 @@ import hmac
 import ipaddress
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -1484,82 +1485,140 @@ def endpoints_list():
     )
 
 
+def _cert_expiry(not_after) -> tuple:
+    """(datetime|None, days_remaining|None) for a NotAfter value.
+
+    Days are recomputed on every page load rather than trusted from the scan snapshot:
+    a certificate collected 40 days ago has 40 fewer days left than the scan recorded,
+    and now that results persist across scans, a stored DaysRemaining would drift
+    steadily further from the truth the longer a host went un-rescanned.
+    """
+    if not not_after:
+        return None, None
+    text = str(not_after)
+    m = re.match(r"/Date\((-?\d+)", text)   # PowerShell's legacy JSON date shape
+    try:
+        if m:
+            dt = datetime.utcfromtimestamp(int(m.group(1)) / 1000)
+        else:
+            dt = datetime.fromisoformat(text.replace("Z", "+00:00").split("+")[0].strip())
+    except (ValueError, OSError, OverflowError):
+        return None, None
+    return dt, (dt - datetime.utcnow()).days
+
+
 @app.route("/certificates")
 def certificates_list():
-    """Every certificate found, expiring or not.
+    """Every certificate ever found, expiring or not, across every scan.
 
-    The dashboard shows only certificates inside the alert threshold, which is right
-    for alerting but can't answer "does this host have a certificate at all?" - the
-    question you have when confirming an IIS binding or proving audit coverage. A
-    scan snapshot taken before CertificateInventory existed only has the expiring
-    subset, so fall back to that and say so rather than showing a misleading empty
-    page."""
+    Results are merged into the permanent store (assets_db.sync_certificates) rather
+    than read straight from the latest snapshot. A snapshot only holds the hosts of
+    the run that produced it, so reading it directly meant scanning one server erased
+    the record of every other one - you had to re-scan the whole estate to keep this
+    page complete. Certificates now accumulate; a host absent from today's scan simply
+    keeps what was last known about it, stamped with when that was.
+    """
     data, demo = _load_snapshot()
-    certs = data.get("CertificateInventory") or []
-    legacy_only = False
-    if not certs and data.get("ExpiringCertificates"):
-        # Older snapshot: show what it does have, flagged, instead of "nothing found".
-        certs = data.get("ExpiringCertificates") or []
-        legacy_only = True
+    snap_certs = data.get("CertificateInventory") or []
+    legacy = False
+    if not snap_certs and data.get("ExpiringCertificates"):
+        snap_certs = data.get("ExpiringCertificates") or []
+        legacy = True
 
     # Find-ExpiringCertificates emits unreachable hosts as pseudo-findings with a
     # '(collection error)' subject and no NotAfter. They are failures to report, not
-    # certificates: counting them, dating them or badging them "Expiring" says a host
-    # has a certificate about to lapse when what actually happened is that nothing
-    # could be read from it at all. Split them out and show the error text instead.
-    errors = [
-        c for c in certs
+    # certificates: counting them or badging them "Expiring" claims a host has a
+    # certificate about to lapse when nothing could be read from it at all.
+    snap_errors = [
+        c for c in snap_certs
         if c.get("CollectionErrors") or c.get("Subject") == "(collection error)"
     ]
-    certs = [c for c in certs if c not in errors]
+    snap_real = [c for c in snap_certs if c not in snap_errors]
 
-    counts = {"Expired": 0, "Expiring": 0, "Valid": 0}
+    if not demo:
+        try:
+            assets_db.sync_certificates(STATE_DIR, snap_real, snap_errors,
+                                        scan_time=str(data.get("ScanTime") or ""))
+        except Exception:
+            pass  # a store problem must not blank the page; /healthz reports it
+
+    if demo:
+        certs, errors = snap_real, snap_errors
+    else:
+        try:
+            certs, errors = assets_db.load_all_certificates(STATE_DIR)
+        except Exception:
+            certs, errors = snap_real, snap_errors
+
+    counts = {"Expired": 0, "Expiring": 0, "Valid": 0, "Unknown": 0}
     by_issuer: dict = {}
-    hosts = set()
-    for c in errors:
-        for h in str(c.get("ComputerName") or c.get("Locations") or "").split(","):
-            h = h.split("[")[0].strip()
-            if h:
-                hosts.add(h)
     for c in certs:
-        days = c.get("DaysRemaining")
-        status = c.get("Status")
-        if not status:
-            # ExpiringCertificates rows have no Status - derive one so the legacy
-            # fallback renders consistently.
-            if days is None:
-                status = "Unknown"
-            elif days < 0:
-                status = "Expired"
-            elif days <= CERT_THRESHOLD_DAYS:
-                status = "Expiring"
-            else:
-                status = "Valid"
-            c["Status"] = status
-        if status in counts:
-            counts[status] += 1
+        expiry, days = _cert_expiry(c.get("NotAfter"))
+        if days is None:
+            days = c.get("DaysRemaining")
+        c["DaysRemaining"] = days
+        if days is None:
+            status = "Unknown"
+        elif days < 0:
+            status = "Expired"
+        elif days <= CERT_THRESHOLD_DAYS:
+            status = "Expiring"
+        else:
+            status = "Valid"
+        c["Status"] = status
+        counts[status] += 1
         issuer = (c.get("Issuer") or "Unknown").strip()
         by_issuer[issuer] = by_issuer.get(issuer, 0) + 1
-        for h in str(c.get("ComputerName") or "").split(","):
-            if h.strip():
-                hosts.add(h.strip())
 
-    # Only claim "your snapshot predates the inventory feature" when the legacy list
-    # actually held certificates. A legacy list of nothing but collection errors means
-    # the scan reached no host, which is a different problem with a different fix.
-    legacy_only = legacy_only and bool(certs)
+    # Group by host so a server with six certificates is one expandable row rather than
+    # six unrelated lines, and so "which hosts have nothing?" is answerable at a glance.
+    hosts: dict = {}
+    for c in certs:
+        locs = c.get("LocationMap") or {h.strip(): {} for h in str(c.get("ComputerName") or "").split(",") if h.strip()}
+        for host, meta in (locs or {"(unknown)": {}}).items():
+            h = hosts.setdefault(host, {"host": host, "certs": [], "last_seen": None,
+                                        "counts": {"Expired": 0, "Expiring": 0, "Valid": 0, "Unknown": 0}})
+            entry = dict(c)
+            entry["Place"] = (meta or {}).get("place", "")
+            h["certs"].append(entry)
+            h["counts"][c["Status"]] += 1
+            seen = (meta or {}).get("last_seen")
+            if seen and (h["last_seen"] is None or seen > h["last_seen"]):
+                h["last_seen"] = seen
+    for h in hosts.values():
+        h["certs"].sort(key=lambda x: (x["DaysRemaining"] is None, x["DaysRemaining"]))
+        h["worst"] = ("Expired" if h["counts"]["Expired"] else
+                      "Expiring" if h["counts"]["Expiring"] else
+                      "Valid" if h["counts"]["Valid"] else "Unknown")
+
+    error_hosts = {(e.get("ComputerName") or "").split("[")[0].strip() for e in errors}
+    host_rows = sorted(
+        hosts.values(),
+        key=lambda h: ({"Expired": 0, "Expiring": 1, "Unknown": 2, "Valid": 3}[h["worst"]], h["host"].lower()),
+    )
+
+    status_filter = request.args.get("status") or ""
+    if status_filter in counts:
+        host_rows = [h for h in host_rows if h["counts"][status_filter]]
+    host_filter = (request.args.get("host") or "").strip().lower()
+    if host_filter:
+        host_rows = [h for h in host_rows if host_filter in h["host"].lower()]
 
     return render_template(
         "certificates.html",
         demo=demo,
-        certs=certs,
+        certs=sorted(certs, key=lambda c: (c["DaysRemaining"] is None, c["DaysRemaining"])),
+        host_rows=host_rows,
         errors=errors,
+        error_hosts=error_hosts,
         total=len(certs),
         counts=counts,
-        host_count=len(hosts),
+        host_count=len(hosts | {h: None for h in error_hosts if h}),
         by_issuer=sorted(by_issuer.items(), key=lambda kv: -kv[1])[:12],
         threshold_days=CERT_THRESHOLD_DAYS,
-        legacy_only=legacy_only,
+        legacy_only=legacy and bool(certs),
+        status_filter=status_filter,
+        host_filter=request.args.get("host") or "",
     )
 
 
