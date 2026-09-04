@@ -189,12 +189,20 @@ def _run_scan(
         "-JsonOutput",
     ]
 
+    # -OnlySelectedScans makes the scanner honour this selection exactly. Without it,
+    # settings.psd1's own enable flags act as an OR fallback, so picking just
+    # "Certificate Scan" here still ran a full zero-day sweep. Scheduled tasks
+    # deliberately don't pass it - unattended runs should stay config-driven.
+    cmd.append("-OnlySelectedScans")
+
     if "compliance" in scan_types:
         cmd.append("-ComplianceScan")
     if "certificate" in scan_types:
         cmd.append("-CertificateScan")
     if "software" in scan_types:
         cmd.append("-SoftwareInventoryScan")
+    if "zeroday" in scan_types:
+        cmd.append("-ZeroDayScan")
     if "anomaly" not in scan_types:
         cmd.append("-SkipAnomalyScan")
     # A comma-joined single argument, not multiple space-separated ones: PowerShell's

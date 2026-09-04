@@ -25,16 +25,19 @@
       Scan Targets
     </div>
 
-    <label for="domain_controllers">Domain Controller Hostnames</label>
+    <label for="domain_controllers">Target Hosts</label>
     <textarea
       id="domain_controllers"
       name="domain_controllers"
       rows="4"
-      placeholder="dc01.contoso.com&#10;dc02.contoso.com&#10;(one per line, or comma-separated)"
+      placeholder="dc01.contoso.com&#10;server01.contoso.com&#10;10.15.2.207&#10;(one per line, or comma-separated)"
       required
     >{{ scan_config.dcs | join('\n') if scan_config else '' }}</textarea>
     <p style="font-size:.78rem; color:var(--muted); margin-top:.3rem;">
-      The scan server needs WinRM access to each DC (typically already configured in a domain environment).
+      Whatever you enter here is what gets scanned — and <strong>only</strong> the scan types ticked
+      below are run against them. Anomaly scanning expects Domain Controllers (it reads DC event
+      logs); certificate, compliance and software scans work against any reachable Windows host.
+      The scan server needs WinRM access to each target.
     </p>
   </div>
 
@@ -71,12 +74,19 @@
               {{'checked' if 'software' in cur_types else ''}}>
             <label for="st_software">💻 Software Inventory</label>
           </div>
+          <div class="checkbox-chip">
+            <input type="checkbox" id="st_zeroday" name="scan_types" value="zeroday"
+              {{'checked' if 'zeroday' in cur_types else ''}}>
+            <label for="st_zeroday">☣️ Zero-Day / KEV</label>
+          </div>
         </div>
         <p style="font-size:.78rem; color:var(--muted); margin-top:.4rem;">
           Anomaly: event log analysis + UEBA baseline.<br>
           Compliance: checks against CIS Benchmarks / NIST / ISO 27001 / HIPAA / OWASP.<br>
           Certificate: machine stores + TLS endpoints + CA, flags expiry within 90 days.<br>
-          Software Inventory: installed software by host, categorized Desktop/Laptop/Server/DC, cross-referenced against zero-days.
+          Software Inventory: installed software by host, categorized Desktop/Laptop/Server/DC, cross-referenced against zero-days.<br>
+          Zero-Day / KEV: pulls the CISA KEV + NVD feeds and matches them against collected software. Independent of the target hosts above.<br>
+          <strong>Only the types ticked here run.</strong> Leave a box unticked and that scan is skipped entirely.
         </p>
       </div>
 

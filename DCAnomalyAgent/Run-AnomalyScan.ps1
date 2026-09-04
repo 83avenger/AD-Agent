@@ -43,6 +43,14 @@ param(
     # Scheduled Tasks so they don't each re-run (and re-report) the anomaly scan
     # that the dedicated anomaly task already covers 3x/day.
     [switch]$SkipAnomalyScan,
+    # Run ONLY the scans whose switches were explicitly passed, ignoring the
+    # config-driven fallbacks below. Scheduled tasks pass no switches and rely on
+    # settings.psd1 deciding what runs, which is right for unattended operation - but
+    # when someone ticks a single box in the web UI they mean that box and nothing
+    # else. Without this, selecting "Certificate Scan" alone still triggered a full
+    # zero-day run (~90s and a Teams alert) because ZeroDay.Enabled is $true by
+    # default. The web UI always passes this; nothing else does.
+    [switch]$OnlySelectedScans,
     [switch]$TestEmail,
     [string[]]$FrameworkFilter,
     # No ValidateSet here (moved to a manual check below) - it would reject a
@@ -104,7 +112,9 @@ $discoveryInventoryPath = "$PSScriptRoot\State\asset-inventory.json"
 
 # Re-check after config is loaded
 if (-not (Get-Module DCAnomalyAgent.ZeroDay -ErrorAction SilentlyContinue)) {
-    if ($ZeroDayScan -or ($config.ZeroDay -and $config.ZeroDay.Enabled)) {
+    $wantZeroDayModule = if ($OnlySelectedScans) { [bool]$ZeroDayScan }
+                         else { $ZeroDayScan -or ($config.ZeroDay -and $config.ZeroDay.Enabled) }
+    if ($wantZeroDayModule) {
         Import-Module "$PSScriptRoot\Modules\DCAnomalyAgent.ZeroDay.psm1" -Force
     }
 }
@@ -329,7 +339,9 @@ if ($ComplianceScan -and $config.Compliance.Enabled) {
 # ZERO-DAY SCAN
 # -----------------------------------------------------------------------------
 $dashboardZeroDays = @()
-$runZeroDay = $ZeroDayScan -or ($config.ZeroDay -and $config.ZeroDay.Enabled -and $config.ZeroDay.AlertOnNew)
+$zeroDayConfigured = $config.ZeroDay -and $config.ZeroDay.Enabled -and $config.ZeroDay.AlertOnNew
+$runZeroDay = if ($OnlySelectedScans) { $ZeroDayScan -and $zeroDayConfigured }
+              else { $ZeroDayScan -or $zeroDayConfigured }
 if ($runZeroDay) {
     Write-ScanLog "Starting zero-day telemetry scan..."
 
