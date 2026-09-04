@@ -216,11 +216,22 @@ def _run_scan(
     if severities:
         cmd += ["-SeverityFilter", ",".join(severities)]
 
+    # A flat 5-minute cap was fine for the handful of DCs this started with, but a
+    # target range is now a legitimate input: 50 hosts collected one after another,
+    # several of them unreachable and each burning WinRM's own connect timeout, does not
+    # fit in 300s. Scale with the work actually requested rather than making everyone
+    # wait for the worst case, and let a site with slower links raise the whole thing
+    # via AD_AGENT_SCAN_TIMEOUT_SEC. The run itself is already on the job queue, so a
+    # longer ceiling costs a browser nothing - it polls /jobs/<id> either way.
+    timeout_sec = int(os.environ.get("AD_AGENT_SCAN_TIMEOUT_SEC") or 0) or min(
+        7200, 300 + 30 * max(0, len(domain_controllers) - 1)
+    )
+
     try:
         result = subprocess.run(
             cmd,
             capture_output=True, text=True,
-            timeout=300,
+            timeout=timeout_sec,
         )
         raw = result.stdout.strip()
         if not raw:
@@ -238,7 +249,12 @@ def _run_scan(
         return parsed, ""
 
     except subprocess.TimeoutExpired:
-        return None, "Scan timed out (>5 minutes)."
+        mins = timeout_sec / 60
+        return None, (
+            f"Scan timed out after {mins:.0f} minute(s) against {len(domain_controllers)} target(s). "
+            "Unreachable hosts are the usual cause - each one costs WinRM's full connect timeout. "
+            "Narrow the range, or raise AD_AGENT_SCAN_TIMEOUT_SEC on the web app service."
+        )
     except json.JSONDecodeError as exc:
         return None, f"Failed to parse scanner output as JSON: {exc}\n\nRaw output:\n{raw[:2000]}"
     except Exception as exc:

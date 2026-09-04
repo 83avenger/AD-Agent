@@ -53,6 +53,40 @@ function Test-IsLocalComputer {
     return $false
 }
 
+function Test-WinRmReachable {
+    <#
+    .SYNOPSIS
+        Fast TCP check that a host is listening for WinRM at all.
+    .DESCRIPTION
+        Invoke-Command against a host that is off, firewalled or simply not there costs
+        WinRM's own connect timeout - tens of seconds each. Across a typed range of 50
+        addresses, most of them unassigned, that alone pushes the run past any sensible
+        ceiling and the whole scan is reported as a timeout, including for the hosts that
+        would have answered. A 1.5s TCP probe turns each dead address into an immediate,
+        clearly-labelled skip instead.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$ComputerName,
+        [int]$TimeoutMs = 1500
+    )
+
+    foreach ($port in @(5985, 5986)) {
+        $client = [System.Net.Sockets.TcpClient]::new()
+        try {
+            $task = $client.ConnectAsync($ComputerName, $port)
+            # Wait() returns $true for a task that COMPLETED, which includes one that
+            # completed by being refused - so a closed port would read as reachable
+            # without the IsFaulted check.
+            if ($task.Wait($TimeoutMs) -and -not $task.IsFaulted -and $client.Connected) { return $true }
+        } catch {
+        } finally {
+            $client.Dispose()
+        }
+    }
+    return $false
+}
+
 function Resolve-WinRmTargetName {
     <#
     .SYNOPSIS
@@ -97,8 +131,12 @@ function Get-DeviceCategory {
     if ($AssetType -notin @('Workstation', 'Windows')) { return $AssetType }
 
     $chassisScript = { (Get-CimInstance -ClassName Win32_SystemEnclosure -ErrorAction Stop).ChassisTypes }
+    $isLocal = Test-IsLocalComputer -ComputerName $ComputerName
+    # Same reason as in Get-InstalledSoftware: don't spend WinRM's full connect timeout
+    # on a host that isn't listening, just to fall back to the generic label anyway.
+    if (-not $isLocal -and -not (Test-WinRmReachable -ComputerName $ComputerName)) { return 'Workstation' }
     try {
-        $chassis = if (Test-IsLocalComputer -ComputerName $ComputerName) {
+        $chassis = if ($isLocal) {
             & $chassisScript
         } else {
             Invoke-Command -ComputerName (Resolve-WinRmTargetName -ComputerName $ComputerName) -ScriptBlock $chassisScript
@@ -147,12 +185,22 @@ function Get-InstalledSoftware {
         }
     }
 
+    # Self-referential Kerberos WinRM (calling your own FQDN) can be denied even for
+    # an elevated admin - a Windows loopback-authentication quirk, not a real
+    # permissions gap. Collecting in-process for the local machine sidesteps it and
+    # is also just faster (no remoting overhead) for the jump server's own inventory.
+    $isLocal = Test-IsLocalComputer -ComputerName $ComputerName
+    if (-not $isLocal -and -not (Test-WinRmReachable -ComputerName $ComputerName)) {
+        return [pscustomobject]@{
+            ComputerName = $ComputerName; Category = $Category
+            Name = $null; Version = $null; Publisher = $null; InstallDate = $null
+            Architecture = $null
+            Error = 'Not listening on WinRM (TCP 5985/5986) - host is down, firewalled, or the address is unused.'
+        }
+    }
+
     try {
-        # Self-referential Kerberos WinRM (calling your own FQDN) can be denied even for
-        # an elevated admin - a Windows loopback-authentication quirk, not a real
-        # permissions gap. Collecting in-process for the local machine sidesteps it and
-        # is also just faster (no remoting overhead) for the jump server's own inventory.
-        $raw = if (Test-IsLocalComputer -ComputerName $ComputerName) {
+        $raw = if ($isLocal) {
             & $collectScript
         } else {
             Invoke-Command -ComputerName (Resolve-WinRmTargetName -ComputerName $ComputerName) -ScriptBlock $collectScript
@@ -290,5 +338,5 @@ function Format-SoftwareInventoryReport {
 }
 
 Export-ModuleMember -Function Get-DeviceCategory, Get-InstalledSoftware, `
-    Find-VulnerableInstalledSoftware, Format-SoftwareInventoryReport, Test-IsLocalComputer, `
+    Find-VulnerableInstalledSoftware, Format-SoftwareInventoryReport, Test-IsLocalComputer, Test-WinRmReachable, `
     Resolve-WinRmTargetName

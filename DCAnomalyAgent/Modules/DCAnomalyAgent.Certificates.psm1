@@ -104,6 +104,40 @@ function Resolve-CertTargetName {
     return $n
 }
 
+function Test-WinRmReachable {
+    <#
+    .SYNOPSIS
+        Fast TCP check that a host is listening for WinRM at all.
+    .DESCRIPTION
+        Invoke-Command against a host that is off, firewalled or simply not there costs
+        WinRM's own connect timeout - tens of seconds each. Across a typed range of 50
+        addresses, most of which are unassigned, that alone runs the scan past any
+        sensible ceiling and the whole run is reported as a timeout, including for the
+        hosts that would have answered. A 1.5s TCP probe turns each dead address into an
+        immediate, clearly-labelled skip instead.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$ComputerName,
+        [int]$TimeoutMs = 1500
+    )
+
+    foreach ($port in @(5985, 5986)) {
+        $client = [System.Net.Sockets.TcpClient]::new()
+        try {
+            $task = $client.ConnectAsync($ComputerName, $port)
+            # Wait() returns $true for a task that COMPLETED, which includes one that
+            # completed by being refused - so a closed port would read as reachable
+            # without the IsFaulted check.
+            if ($task.Wait($TimeoutMs) -and -not $task.IsFaulted -and $client.Connected) { return $true }
+        } catch {
+        } finally {
+            $client.Dispose()
+        }
+    }
+    return $false
+}
+
 function Get-MachineCertificate {
     <#
     .SYNOPSIS
@@ -149,8 +183,19 @@ function Get-MachineCertificate {
             }
     }
 
+    $isLocal = Test-IsLocalCertHost -ComputerName $ComputerName
+    if (-not $isLocal -and -not (Test-WinRmReachable -ComputerName $ComputerName)) {
+        return [pscustomobject]@{
+            Source = 'MachineStore'; ComputerName = $ComputerName; Location = 'Cert:\LocalMachine'
+            Subject = $null; Issuer = $null; Thumbprint = $null
+            NotBefore = $null; NotAfter = $null; DnsNames = $null; FriendlyName = $null
+            HasPrivateKey = $null
+            Error = 'Not listening on WinRM (TCP 5985/5986) - host is down, firewalled, or the address is unused.'
+        }
+    }
+
     try {
-        $raw = if (Test-IsLocalCertHost -ComputerName $ComputerName) {
+        $raw = if ($isLocal) {
             & $collectScript $Stores
         } else {
             Invoke-Command -ComputerName (Resolve-CertTargetName -ComputerName $ComputerName) `
@@ -520,6 +565,7 @@ function Format-CertificateReport {
 }
 
 Export-ModuleMember -Function Get-MachineCertificate, Test-IsLocalCertHost, `
+    Test-WinRmReachable, `
     Resolve-CertTargetName, Get-EndpointCertificate, `
     Get-CaIssuedCertificate, Find-ExpiringCertificates, Format-CertificateReport, `
     ConvertTo-CertificateInventory
