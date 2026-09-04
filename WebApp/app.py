@@ -519,6 +519,7 @@ def _is_online(last_seen_iso: str | None) -> bool:
         return False
 
 
+CERT_THRESHOLD_DAYS = 90   # mirrors Certificates.ThresholdDays in settings.psd1
 STALE_THRESHOLD_DAYS = 14  # e.g. a laptop out on leave for 2-3 weeks
 PRESENCE_WINDOW_DAYS = 30  # window for the Endpoints page's office/remote day counts
 
@@ -1480,6 +1481,56 @@ def endpoints_list():
         is_online=_is_online,
         is_stale=_is_stale,
         time_ago=_time_ago,
+    )
+
+
+@app.route("/certificates")
+def certificates_list():
+    """Every certificate found, expiring or not.
+
+    The dashboard shows only certificates inside the alert threshold, which is right
+    for alerting but can't answer "does this host have a certificate at all?" - the
+    question you have when confirming an IIS binding or proving audit coverage. A
+    scan snapshot taken before CertificateInventory existed only has the expiring
+    subset, so fall back to that and say so rather than showing a misleading empty
+    page."""
+    data, demo = _load_snapshot()
+    certs = data.get("CertificateInventory") or []
+    legacy_only = False
+    if not certs and data.get("ExpiringCertificates"):
+        # Older snapshot: show what it does have, flagged, instead of "nothing found".
+        certs = data.get("ExpiringCertificates") or []
+        legacy_only = True
+
+    counts = {"Expired": 0, "Expiring": 0, "Valid": 0}
+    by_issuer: dict = {}
+    hosts = set()
+    for c in certs:
+        days = c.get("DaysRemaining")
+        status = c.get("Status")
+        if not status:
+            # ExpiringCertificates rows have no Status - derive one so the legacy
+            # fallback renders consistently.
+            status = "Expired" if (days is not None and days < 0) else "Expiring"
+            c["Status"] = status
+        if status in counts:
+            counts[status] += 1
+        issuer = (c.get("Issuer") or "Unknown").strip()
+        by_issuer[issuer] = by_issuer.get(issuer, 0) + 1
+        for h in str(c.get("ComputerName") or "").split(","):
+            if h.strip():
+                hosts.add(h.strip())
+
+    return render_template(
+        "certificates.html",
+        demo=demo,
+        certs=certs,
+        total=len(certs),
+        counts=counts,
+        host_count=len(hosts),
+        by_issuer=sorted(by_issuer.items(), key=lambda kv: -kv[1])[:12],
+        threshold_days=CERT_THRESHOLD_DAYS,
+        legacy_only=legacy_only,
     )
 
 

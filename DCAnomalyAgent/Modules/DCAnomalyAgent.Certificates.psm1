@@ -264,6 +264,72 @@ function Get-CaIssuedCertificate {
     }
 }
 
+function ConvertTo-CertificateInventory {
+    <#
+    .SYNOPSIS
+        Returns EVERY collected certificate - expiring or not - as a flat inventory.
+    .DESCRIPTION
+        Find-ExpiringCertificates deliberately narrows to certificates inside the
+        alert threshold, which is right for alerting but means a certificate valid
+        until 2027 is collected and then discarded. That makes the question "does
+        this host have a certificate at all, and which one?" unanswerable - exactly
+        the question you have when confirming an IIS binding, tracking down which CA
+        issued something, or proving coverage during an audit.
+
+        Same input as Find-ExpiringCertificates, same thumbprint de-duplication, but
+        no expiry filter. Adds a Status so the two views agree on what counts as
+        expiring rather than each deciding separately.
+    .OUTPUTS
+        [pscustomobject]: Id (thumbprint), Subject, Issuer, NotBefore, NotAfter,
+        DaysRemaining, Status, Severity, Sources, Locations, DnsNames, FriendlyName,
+        ComputerName, HasPrivateKey
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowNull()][AllowEmptyCollection()][array]$Certificates,
+        [int]$ThresholdDays = 90,
+        [datetime]$Now = (Get-Date)
+    )
+
+    $valid = $Certificates | Where-Object { -not $_.Error -and $_.NotAfter }
+    $grouped = $valid | Group-Object Thumbprint
+
+    # @() so a single group doesn't collapse to a bare object - the same trap that
+    # produced the op_Addition crash in Find-ExpiringCertificates.
+    $inventory = @(foreach ($g in $grouped) {
+        $first = $g.Group[0]
+        $daysRemaining = [math]::Floor(($first.NotAfter - $Now).TotalDays)
+        $status = if ($daysRemaining -lt 0) { 'Expired' }
+                  elseif ($daysRemaining -le $ThresholdDays) { 'Expiring' }
+                  else { 'Valid' }
+        $severity = if ($daysRemaining -lt 0) { 'Critical' }
+                    elseif ($daysRemaining -le 14) { 'Critical' }
+                    elseif ($daysRemaining -le 30) { 'High' }
+                    elseif ($daysRemaining -le 60) { 'Medium' }
+                    else { 'Low' }
+
+        [pscustomobject]@{
+            Id            = $first.Thumbprint
+            Subject       = $first.Subject
+            Issuer        = $first.Issuer
+            NotBefore     = $first.NotBefore
+            NotAfter      = $first.NotAfter
+            DaysRemaining = $daysRemaining
+            Status        = $status
+            Severity      = $severity
+            FriendlyName  = $first.FriendlyName
+            HasPrivateKey = $first.HasPrivateKey
+            ComputerName  = (($g.Group | ForEach-Object { $_.ComputerName } | Where-Object { $_ } | Select-Object -Unique) -join ', ')
+            Sources       = (($g.Group.Source | Select-Object -Unique) -join ', ')
+            Locations     = (($g.Group | ForEach-Object { "$($_.ComputerName) [$($_.Location)]" } | Select-Object -Unique) -join '; ')
+            DnsNames      = $first.DnsNames
+        }
+    })
+
+    $statusOrder = @{ 'Expired' = 0; 'Expiring' = 1; 'Valid' = 2 }
+    return @($inventory | Sort-Object @{ e = { $statusOrder[$_.Status] } }, DaysRemaining)
+}
+
 function Find-ExpiringCertificates {
     <#
     .SYNOPSIS
@@ -384,4 +450,5 @@ function Format-CertificateReport {
 }
 
 Export-ModuleMember -Function Get-MachineCertificate, Get-EndpointCertificate, `
-    Get-CaIssuedCertificate, Find-ExpiringCertificates, Format-CertificateReport
+    Get-CaIssuedCertificate, Find-ExpiringCertificates, Format-CertificateReport, `
+    ConvertTo-CertificateInventory

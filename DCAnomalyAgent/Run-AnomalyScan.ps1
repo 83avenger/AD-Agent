@@ -384,6 +384,7 @@ if ($runZeroDay) {
 # CERTIFICATE EXPIRY SCAN
 # -----------------------------------------------------------------------------
 $expiringCerts = @()
+$certInventory = @()
 if ($runCertScan) {
     Write-ScanLog "Starting certificate expiry scan..."
     $certCfg = $config.Certificates
@@ -443,6 +444,10 @@ if ($runCertScan) {
     }
 
     $expiringCerts = Find-ExpiringCertificates -Certificates $collected -ThresholdDays $thresholdDays
+    # Everything found, expiring or not. Same collection, no expiry filter - answers
+    # "does this host have a certificate at all?", which the expiring-only view cannot.
+    $certInventory = @(ConvertTo-CertificateInventory -Certificates $collected -ThresholdDays $thresholdDays)
+    Write-ScanLog "Certificate inventory: $($certInventory.Count) certificate(s) found across all scanned locations ($($expiringCerts.Count) within the $thresholdDays-day threshold)."
     $expiringReal  = @($expiringCerts | Where-Object { $null -ne $_.DaysRemaining })
     Write-ScanLog "Certificate scan complete: $($expiringReal.Count) cert(s) expiring within $thresholdDays days."
 
@@ -579,6 +584,7 @@ try {
         ComplianceGaps       = if ($ranCompliance) { @($complianceGaps) } elseif ($prev) { @($prev.ComplianceGaps) }       else { @() }
         ComplianceSummary    = if ($ranCompliance) { $complianceSummary } elseif ($prev) { $prev.ComplianceSummary }        else { $null }
         ExpiringCertificates = if ($ranCert)       { @($expiringCerts) }  elseif ($prev) { @($prev.ExpiringCertificates) }  else { @() }
+        CertificateInventory = if ($ranCert)       { @($certInventory) }  elseif ($prev) { @($prev.CertificateInventory) }  else { @() }
         ZeroDays             = if ($ranZeroDay)    { @($dashboardZeroDays) } elseif ($prev) { @($prev.ZeroDays) }           else { @() }
         SoftwareInventory    = if ($ranSoftware)   { @($softwareInventory) } elseif ($prev) { @($prev.SoftwareInventory) }  else { @() }
         VulnerableSoftware   = if ($ranSoftware)   { @($vulnerableSoftware) } elseif ($prev) { @($prev.VulnerableSoftware) } else { @() }
@@ -611,6 +617,7 @@ if ($JsonOutput) {
     }
     if ($runCertScan) {
         $payload['ExpiringCertificates'] = $expiringCerts
+        $payload['CertificateInventory'] = $certInventory
     }
     if ($runSoftwareInventory) {
         $payload['SoftwareInventory']  = $softwareInventory
@@ -626,6 +633,7 @@ if (($ComplianceScan -and $config.Compliance.Enabled) -or $runCertScan -or $runS
         ComplianceGaps       = $complianceGaps
         Summary              = $complianceSummary
         ExpiringCertificates = $expiringCerts
+        CertificateInventory = $certInventory
         SoftwareInventory    = $softwareInventory
         VulnerableSoftware   = $vulnerableSoftware
     }
