@@ -1760,6 +1760,10 @@ def discovery_run():
         return render_template("index.html", error="Discovery needs at least one target: check "
                                 "“From Active Directory” or enter a CIDR range.")
 
+    target_err = _validate_targets(cidr) or _validate_targets(warp_cidr)
+    if target_err:
+        return render_template("index.html", error=target_err)
+
     _audit("discovery_submit", f"from_ad={from_ad} cidr={cidr} warp_cidr={warp_cidr}")
     job_id = _submit_job(
         "discovery", _discovery_job, from_ad, cidr, warp_cidr, skip_categorize, skip_software
@@ -1781,6 +1785,54 @@ def _discovery_job(from_ad, cidr, warp_cidr, skip_categorize, skip_software) -> 
 # discovery side, so a range that worked in one box and was rejected in the other was
 # purely an inconsistency between the two entry points, not a real limit.
 _MAX_SCAN_TARGETS = 1024
+
+
+def _validate_targets(targets: list[str]) -> str | None:
+    """Reject malformed network targets before PowerShell ever sees them.
+
+    Expand-Cidr throws on a bad target and takes the whole discovery run with it, and
+    what surfaces in the browser is a PowerShell stack trace with the parse error buried
+    in it. Checking here means an obvious typo is caught instantly and named plainly.
+    """
+    # Pre-pass for the classic typo: a comma typed where a dot belongs, e.g.
+    # "10.15.2.150 - 10,15.2.250". That splits one range into two targets - a truncated
+    # range and an orphan fragment - and both halves can look individually plausible
+    # enough that the per-target error below names the wrong thing. Catch the pair.
+    for i in range(len(targets) - 1):
+        a, b = targets[i], targets[i + 1]
+        if "-" in a and b[:1].isdigit() and b.count(".") < 3 and a[:1].isdigit():
+            return (f"'{a}' and '{b}' look like one range split by a comma typed in place "
+                    f"of a dot. Did you mean '{a}.{b}'?")
+
+    for i, t in enumerate(targets):
+        looks_numeric = t[:1].isdigit()
+        if not looks_numeric:
+            continue  # a hostname - DNS resolves it at scan time, nothing to validate here
+        try:
+            if "/" in t:
+                ipaddress.ip_network(t, strict=False)
+            elif "-" in t:
+                lo_s, hi_s = (x.strip() for x in t.split("-", 1))
+                if hi_s.isdigit() and lo_s.count(".") == 3:
+                    hi_s = lo_s.rsplit(".", 1)[0] + "." + hi_s
+                lo, hi = ipaddress.ip_address(lo_s), ipaddress.ip_address(hi_s)
+                if hi < lo:
+                    return f"Invalid range '{t}': the end address is lower than the start."
+            else:
+                ipaddress.ip_address(t)
+        except ValueError:
+            # The classic version of this: a comma typed where a dot belongs, e.g.
+            # "10.15.2.150 - 10,15.2.250". The comma splits one range into two targets -
+            # a truncated range and an orphan fragment - and whichever half fails is the
+            # only one the error names, which reads as nonsense. Say what probably
+            # happened instead.
+            prev = targets[i - 1] if i else ""
+            if prev and "-" in prev and t[:1].isdigit():
+                return (f"'{t}' isn't a valid IP, CIDR or range. Did you mean "
+                        f"'{prev}.{t}'? A comma typed in place of a dot splits one range "
+                        "into two invalid targets.")
+            return f"'{t}' isn't a valid IP, CIDR or range."
+    return None
 
 
 def _expand_scan_targets(raw: str) -> tuple[list[str], str | None]:
@@ -1828,6 +1880,12 @@ def _expand_scan_targets(raw: str) -> tuple[list[str], str | None]:
 @app.route("/scan", methods=["POST"])
 def scan():
     raw_dcs  = request.form.get("domain_controllers", "").strip()
+    # Validate what was typed before expanding it, so the message names the entry as the
+    # user wrote it rather than something derived from it.
+    typed = [p.strip() for p in raw_dcs.replace("\n", ",").split(",") if p.strip()]
+    target_err = _validate_targets(typed)
+    if target_err:
+        return render_template("index.html", error=target_err)
     dcs, target_err = _expand_scan_targets(raw_dcs)
     if target_err:
         return render_template("index.html", error=target_err)

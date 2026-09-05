@@ -252,7 +252,16 @@ function Get-NetworkAsset {
         if ($null -ne $result) { return $result }
     }
 
-    $ips = foreach ($c in $Cidr) { Expand-Cidr -Cidr $c }
+    # One malformed entry used to abort the whole run - four good ranges discarded
+    # because the fifth had a typo in it. Skip the bad one, say so, and scan the rest.
+    $ips = @(foreach ($c in $Cidr) {
+        try {
+            Expand-Cidr -Cidr $c
+        } catch {
+            Write-Warning "Skipping target '$c': $($_.Exception.Message)"
+        }
+    })
+    if (-not $ips) { throw "No valid targets to scan - every entry was rejected. Check the ranges above." }
 
     # NOTE: ForEach-Object -Parallel does not support -ArgumentList (that belongs to a
     # different parameter set) and its runspaces don't inherit module-scope functions, so
