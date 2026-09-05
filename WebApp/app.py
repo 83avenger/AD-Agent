@@ -293,8 +293,19 @@ def _run_discovery(
     if skip_software:
         cmd.append("-SkipSoftwareInventory")
 
+    # Scale with the size of the sweep rather than a flat 10 minutes: 100 addresses is a
+    # perfectly ordinary ask and a fixed ceiling turned it into a failure that threw away
+    # everything already found. AD_AGENT_DISCOVERY_TIMEOUT_SEC overrides it outright.
+    address_count = 0
+    for target in list(cidr) + list(cloudflare_warp_cidr):
+        expanded, err = _expand_scan_targets(target)
+        address_count += len(expanded) if not err else 1
+    timeout_sec = int(os.environ.get("AD_AGENT_DISCOVERY_TIMEOUT_SEC") or 0) or min(
+        10800, 600 + 6 * max(0, address_count - 1)
+    )
+
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec)
         raw = result.stdout.strip()
         if not raw:
             return None, result.stderr.strip() or "Discovery produced no output."
@@ -304,7 +315,11 @@ def _run_discovery(
             return None, f"No JSON in output.\n\nStdout:\n{raw}\n\nStderr:\n{result.stderr}"
         return json.loads(raw[json_start:json_end]), ""
     except subprocess.TimeoutExpired:
-        return None, "Discovery timed out (>10 minutes) — try a smaller CIDR range or -SkipSoftwareInventory."
+        return None, (
+            f"Discovery timed out after {timeout_sec / 60:.0f} minute(s) across {address_count} address(es). "
+            "Tick “Skip software inventory” for a faster sweep, narrow the range, or raise "
+            "AD_AGENT_DISCOVERY_TIMEOUT_SEC on the web app service."
+        )
     except json.JSONDecodeError as exc:
         return None, f"Failed to parse discovery output as JSON: {exc}\n\nRaw output:\n{raw[:2000]}"
     except Exception as exc:

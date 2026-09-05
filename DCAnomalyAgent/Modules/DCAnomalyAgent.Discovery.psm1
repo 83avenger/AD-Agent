@@ -274,23 +274,47 @@ function Get-NetworkAsset {
             $SourceLabel = $using:SourceLabel
             $ScanPorts   = $using:ScanPorts
 
-            function _port($h, $p, $t) {
-                try {
-                    $cl = [System.Net.Sockets.TcpClient]::new()
-                    $a  = $cl.BeginConnect($h, $p, $null, $null)
-                    $r  = $a.AsyncWaitHandle.WaitOne($t)
-                    $open = $r -and $cl.Connected
-                    if ($open) { $cl.EndConnect($a) }
-                    $cl.Close()
-                    return $open
-                } catch { return $false }
+            # All of a host's ports are probed CONCURRENTLY, not one after another. Probed
+            # in sequence, every closed port costs the full timeout, so one dead address
+            # cost 9 x TimeoutMs; across a 100-address range that alone ran past any
+            # sensible ceiling and the whole discovery was reported as a timeout.
+            # Concurrently, a dead host costs one timeout instead of nine.
+            function _ports($h, $portMap, $t) {
+                $clients = @{}
+                $tasks   = @{}
+                foreach ($n in $portMap.Keys) {
+                    try {
+                        $cl = [System.Net.Sockets.TcpClient]::new()
+                        $clients[$n] = $cl
+                        $tasks[$n]   = $cl.ConnectAsync($h, $portMap[$n])
+                    } catch {
+                        # Socket/DNS setup failed for this host - nothing to wait on.
+                    }
+                }
+                if ($tasks.Count) {
+                    try {
+                        [void][System.Threading.Tasks.Task]::WaitAll([System.Threading.Tasks.Task[]]@($tasks.Values), $t)
+                    } catch {
+                        # WaitAll throws if ANY task faulted (connection refused, for
+                        # instance). That is a normal result here, not an error - each
+                        # task's own state is inspected below.
+                    }
+                }
+                $result = @{}
+                foreach ($n in $portMap.Keys) {
+                    $tk = $tasks[$n]
+                    $result[$n] = [bool]($tk -and
+                        $tk.Status -eq [System.Threading.Tasks.TaskStatus]::RanToCompletion -and
+                        $clients[$n].Connected)
+                }
+                foreach ($cl in $clients.Values) { try { $cl.Close() } catch { } }
+                return $result
             }
 
             # Only probes ports actually present in $ScanPorts - a name omitted from that
             # map is simply never touched (classification degrades gracefully rather than
             # erroring on a missing key, since $ports.SomeOmittedName reads as $false/$null).
-            $ports = @{}
-            foreach ($portName in $ScanPorts.Keys) { $ports[$portName] = _port $ip $ScanPorts[$portName] $TimeoutMs }
+            $ports = _ports $ip $ScanPorts $TimeoutMs
 
             if (-not ($ports.Values -contains $true)) { return }  # host appears dead
 
@@ -315,20 +339,44 @@ function Get-NetworkAsset {
         } -ThrottleLimit $ThrottleLimit
     } else {
         foreach ($ip in $ips) {
-            function _port($h, $p, $t) {
-                try {
-                    $cl = [System.Net.Sockets.TcpClient]::new()
-                    $a  = $cl.BeginConnect($h, $p, $null, $null)
-                    $r  = $a.AsyncWaitHandle.WaitOne($t)
-                    $open = $r -and $cl.Connected
-                    if ($open) { $cl.EndConnect($a) }
-                    $cl.Close()
-                    return $open
-                } catch { return $false }
+            # All of a host's ports are probed CONCURRENTLY, not one after another. Probed
+            # in sequence, every closed port costs the full timeout, so one dead address
+            # cost 9 x TimeoutMs; across a 100-address range that alone ran past any
+            # sensible ceiling and the whole discovery was reported as a timeout.
+            # Concurrently, a dead host costs one timeout instead of nine.
+            function _ports($h, $portMap, $t) {
+                $clients = @{}
+                $tasks   = @{}
+                foreach ($n in $portMap.Keys) {
+                    try {
+                        $cl = [System.Net.Sockets.TcpClient]::new()
+                        $clients[$n] = $cl
+                        $tasks[$n]   = $cl.ConnectAsync($h, $portMap[$n])
+                    } catch {
+                        # Socket/DNS setup failed for this host - nothing to wait on.
+                    }
+                }
+                if ($tasks.Count) {
+                    try {
+                        [void][System.Threading.Tasks.Task]::WaitAll([System.Threading.Tasks.Task[]]@($tasks.Values), $t)
+                    } catch {
+                        # WaitAll throws if ANY task faulted (connection refused, for
+                        # instance). That is a normal result here, not an error - each
+                        # task's own state is inspected below.
+                    }
+                }
+                $result = @{}
+                foreach ($n in $portMap.Keys) {
+                    $tk = $tasks[$n]
+                    $result[$n] = [bool]($tk -and
+                        $tk.Status -eq [System.Threading.Tasks.TaskStatus]::RanToCompletion -and
+                        $clients[$n].Connected)
+                }
+                foreach ($cl in $clients.Values) { try { $cl.Close() } catch { } }
+                return $result
             }
 
-            $ports = @{}
-            foreach ($portName in $ScanPorts.Keys) { $ports[$portName] = _port $ip $ScanPorts[$portName] $TimeoutMs }
+            $ports = _ports $ip $ScanPorts $TimeoutMs
 
             if (-not ($ports.Values -contains $true)) { continue }  # host appears dead
 
