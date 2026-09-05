@@ -1623,6 +1623,7 @@ def certificates_list():
     return render_template(
         "certificates.html",
         demo=demo,
+        error_ttl_days=assets_db.CERT_ERROR_TTL_DAYS,
         certs=sorted(certs, key=lambda c: (c["DaysRemaining"] is None, c["DaysRemaining"])),
         host_rows=host_rows,
         errors=errors,
@@ -1636,6 +1637,21 @@ def certificates_list():
         status_filter=status_filter,
         host_filter=request.args.get("host") or "",
     )
+
+
+@app.route("/certificates/errors/clear", methods=["POST"])
+def certificates_clear_error():
+    """Dismiss one collection failure. Failures age out on their own after
+    CERT_ERROR_TTL_DAYS, but a target you have just removed from the config shouldn't
+    have to sit on the page for a week first."""
+    target = (request.form.get("target") or "").strip()
+    if target:
+        _audit("cert_error_dismiss", f"target={target}")
+        try:
+            assets_db.delete_cert_error(STATE_DIR, target)
+        except Exception:
+            pass
+    return redirect(url_for("certificates_list"))
 
 
 @app.route("/software")

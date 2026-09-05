@@ -163,11 +163,14 @@
   <p style="color:var(--muted); font-size:.82rem; margin:-.4rem 0 .8rem;">
     These targets returned no certificate at all on their last attempt. They are <em>not</em>
     expiring certificates — there is nothing here to renew, only a host or endpoint to make
-    reachable. A row disappears once that target successfully returns a certificate.
+    reachable. A row disappears once that target successfully returns a certificate, or
+    automatically once no scan has re-reported it for {{ error_ttl_days }} days — so a
+    target you have just removed from the config lingers here until the next scan or two
+    stops mentioning it. Dismiss it now if you don't want to wait.
   </p>
   <div class="tbl-wrap">
     <table>
-      <thead><tr><th>Target</th><th>Source</th><th>Reason</th><th>Failing since</th></tr></thead>
+      <thead><tr><th>Target</th><th>Source</th><th>Reason</th><th>Failing since</th><th>Last seen failing</th><th></th></tr></thead>
       <tbody>
         {% for e in errors %}
         <tr>
@@ -175,6 +178,14 @@
           <td style="font-size:.78rem; color:var(--muted);">{{ e.Sources or '—' }}</td>
           <td style="font-size:.78rem;">{{ e.CollectionErrors or 'Unknown error' }}</td>
           <td style="font-size:.78rem; color:var(--muted); white-space:nowrap;">{{ e.FirstSeen[:16] if e.FirstSeen else '—' }}</td>
+          <td style="font-size:.78rem; color:var(--muted); white-space:nowrap;">{{ e.LastSeen[:16] if e.LastSeen else '—' }}</td>
+          <td>
+            <form method="post" action="/certificates/errors/clear" style="margin:0;">
+              <input type="hidden" name="target" value="{{ e.ComputerName }}">
+              <button type="submit" class="btn-secondary" style="padding:.2rem .6rem; font-size:.72rem;"
+                title="Remove this row now instead of waiting for it to age out">Dismiss</button>
+            </form>
+          </td>
         </tr>
         {% endfor %}
       </tbody>

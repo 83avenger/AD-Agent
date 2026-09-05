@@ -418,6 +418,13 @@ if ($runCertScan) {
         Write-ScanLog "WARN (cert): no machine-store targets resolved - nothing to read certificate stores from."
     }
 
+    # Hosts whose certificate store couldn't be read. WinRM being closed says nothing
+    # about whether the host is serving TLS - a Linux box, an appliance, or a Windows
+    # server with WinRM firewalled off can still present a perfectly good certificate on
+    # 443. Falling back to a TLS probe turns "we know nothing about this host" into "here
+    # is the certificate it serves", which is usually the one you actually care about.
+    $certStoreFailed = @()
+
     foreach ($t in $certTargets) {
         try {
             $certRows = @(Get-MachineCertificate -ComputerName $t -Stores $certCfg.MachineStores)
@@ -430,9 +437,11 @@ if ($runCertScan) {
             }
             $ok = @($certRows | Where-Object { -not $_.Error })
             Write-ScanLog "  ${t}: $($ok.Count) certificate(s)"
+            if (-not $ok) { $certStoreFailed += $t }
             $collected += $certRows
         } catch {
             Write-ScanLog "ERROR (cert: machine store on $t): $_"
+            $certStoreFailed += $t
         }
     }
 
@@ -446,6 +455,17 @@ if ($runCertScan) {
     if ($certCfg.ProbeDcLdaps) {
         foreach ($dc in $config.DomainControllers) { $endpoints += @{ Host = $dc; Port = 636; Name = 'DC LDAPS' } }
     }
+    # TLS fallback for hosts the machine-store read couldn't reach (see $certStoreFailed).
+    $fallbackPorts = if ($certCfg.FallbackTlsPorts) { $certCfg.FallbackTlsPorts } else { @(443) }
+    foreach ($t in ($certStoreFailed | Select-Object -Unique)) {
+        foreach ($p in $fallbackPorts) {
+            $endpoints += @{ Host = $t; Port = $p; Name = 'TLS fallback (WinRM unavailable)' }
+        }
+    }
+    if ($certStoreFailed) {
+        Write-ScanLog "Falling back to TLS probe on port(s) $($fallbackPorts -join ', ') for $(@($certStoreFailed | Select-Object -Unique).Count) host(s) whose certificate store could not be read."
+    }
+
     if ($certCfg.ProbeWebApps -and $config.Assets.WebApplication) {
         foreach ($w in $config.Assets.WebApplication.Hosts) {
             $h = $w -replace '^https?://' -replace '/.*$'

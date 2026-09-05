@@ -676,10 +676,25 @@ def sync_certificates(state_dir: Path, certs: list, errors: list, scan_time: str
         conn.close()
 
 
-def load_all_certificates(state_dir: Path) -> tuple[list, list]:
-    """Every certificate ever collected, plus the currently-failing targets."""
+CERT_ERROR_TTL_DAYS = 7
+
+
+def load_all_certificates(state_dir: Path, error_ttl_days: int = CERT_ERROR_TTL_DAYS) -> tuple[list, list]:
+    """Every certificate ever collected, plus the currently-failing targets.
+
+    Error rows are pruned once nothing has re-reported them for error_ttl_days. A target
+    that is removed from the config (a placeholder endpoint deleted, a decommissioned
+    host) never succeeds and so would never clear itself - it would sit on the page as a
+    permanent failure for something nobody is scanning any more."""
     conn = get_connection(state_dir)
     try:
+        cutoff = (datetime.utcnow() - timedelta(days=error_ttl_days)).isoformat()
+        cur0 = conn.cursor()
+        cur0.execute(
+            f"DELETE FROM cert_errors WHERE last_seen < {'%s' if BACKEND == 'postgres' else '?'}",
+            (cutoff,),
+        )
+        conn.commit()
         if BACKEND == "postgres":
             cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
             cur.execute("SELECT * FROM certificates")
@@ -719,6 +734,21 @@ def load_all_certificates(state_dir: Path) -> tuple[list, list]:
             "FirstSeen": r["first_seen"], "LastSeen": r["last_seen"],
         } for r in err_rows]
         return certs, errors
+    finally:
+        conn.close()
+
+
+def delete_cert_error(state_dir: Path, target: str) -> bool:
+    """Dismiss one collection failure by hand - for a target you have deliberately
+    stopped scanning and don't want to wait out the TTL on."""
+    conn = get_connection(state_dir)
+    try:
+        cur = conn.cursor()
+        ph = "%s" if BACKEND == "postgres" else "?"
+        cur.execute(f"DELETE FROM cert_errors WHERE target = {ph}", (target,))
+        deleted = cur.rowcount > 0
+        conn.commit()
+        return deleted
     finally:
         conn.close()
 
