@@ -210,6 +210,66 @@ function Invoke-NetscanBinary {
     }
 }
 
+function Get-LocalSubnet {
+    <#
+    .SYNOPSIS
+        The IPv4 subnet(s) this server itself sits on, in CIDR form.
+    .DESCRIPTION
+        The subnet you are already plugged into is the one guaranteed to be routable and
+        firewall-clear from here, so it is the right thing to scan first when nothing else
+        is configured - and the right thing to fall back to rather than scanning nothing
+        at all. Loopback, APIPA (169.254/16) and virtual/Hyper-V adapter addresses are
+        excluded; a prefix wider than /22 is clamped, because scanning a /8 because a NIC
+        happens to carry that mask is never what anyone meant.
+    #>
+    [CmdletBinding()]
+    param([int]$MinPrefix = 22)
+
+    $out = @()
+    try {
+        $addresses = if (Get-Command Get-NetIPAddress -ErrorAction SilentlyContinue) {
+            Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop |
+                Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' -and
+                               $_.PrefixOrigin -ne 'WellKnown' }
+        } else {
+            # PowerShell 5.1 on older/Core SKUs without the NetTCPIP module.
+            Get-WmiObject -Class Win32_NetworkAdapterConfiguration -Filter 'IPEnabled = True' |
+                ForEach-Object {
+                    $ipList, $maskList = $_.IPAddress, $_.IPSubnet
+                    for ($i = 0; $i -lt @($ipList).Count; $i++) {
+                        if ($ipList[$i] -notmatch ':' -and $ipList[$i] -notlike '127.*' -and $ipList[$i] -notlike '169.254.*') {
+                            $bits = ([Convert]::ToString(([System.Net.IPAddress]::Parse($maskList[$i]).GetAddressBytes() |
+                                ForEach-Object { [Convert]::ToString($_, 2) }) -join '', 2))
+                            [pscustomobject]@{
+                                IPAddress    = $ipList[$i]
+                                PrefixLength = (([string]::Join('', ($maskList[$i].Split('.') |
+                                    ForEach-Object { [Convert]::ToString([int]$_, 2).PadLeft(8, '0') }))).ToCharArray() |
+                                    Where-Object { $_ -eq '1' }).Count
+                            }
+                        }
+                    }
+                }
+        }
+
+        foreach ($a in $addresses) {
+            $prefix = [int]$a.PrefixLength
+            if ($prefix -lt $MinPrefix) { $prefix = 24 }   # a NIC claiming /8 is not an invitation to scan 16M hosts
+            if ($prefix -ge 31) { continue }               # point-to-point link, nothing to sweep
+            $bytes = [System.Net.IPAddress]::Parse($a.IPAddress).GetAddressBytes()
+            [Array]::Reverse($bytes)
+            $addrInt = [BitConverter]::ToUInt32($bytes, 0)
+            $mask    = [uint32]([math]::Pow(2, 32) - [math]::Pow(2, 32 - $prefix))
+            $netInt  = $addrInt -band $mask
+            $nb = [BitConverter]::GetBytes([uint32]$netInt)
+            [Array]::Reverse($nb)
+            $out += "$([System.Net.IPAddress]::new($nb).ToString())/$prefix"
+        }
+    } catch {
+        Write-Warning "Could not determine the local subnet: $_"
+    }
+    return @($out | Select-Object -Unique)
+}
+
 function Get-NetworkAsset {
     <#
     .SYNOPSIS
@@ -475,4 +535,4 @@ function Export-AssetInventory {
 }
 
 Export-ModuleMember -Function Get-ADAsset, Get-NetworkAsset, Test-TcpPort, `
-    Expand-Cidr, Merge-AssetInventory, Export-AssetInventory
+    Expand-Cidr, Get-LocalSubnet, Merge-AssetInventory, Export-AssetInventory

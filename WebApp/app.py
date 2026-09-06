@@ -495,7 +495,12 @@ def _save_vendor_warranty_secrets(update: dict) -> None:
         json.dump(data, fh, indent=2)
 
 
-_last_synced_mtime: float | None = None  # module-level: avoids re-syncing an unchanged
+_last_synced_mtime: float | None = None
+# Last reason the discovery snapshot failed to reach the asset store, surfaced on
+# /healthz. Silently swallowing this is what made "discovery runs but assets never
+# update" so hard to pin down.
+_last_sync_error: str | None = None
+_last_sync_error: str | None = None  # module-level: avoids re-syncing an unchanged
 # snapshot on every page view. Matters for manual deletes (below): if a deleted asset is
 # still present in the CURRENT snapshot, re-running that same sync would just re-insert
 # it right back. Only syncing when the file's mtime actually advances means a delete
@@ -508,7 +513,7 @@ def _load_discovery_inventory() -> tuple[list, str | None]:
     Postgres), syncing in whatever the latest Run-Discovery.ps1 JSON snapshot has first
     (only if it's changed since the last sync). Empty list if no discovery scan has ever
     run and the store has nothing yet."""
-    global _last_synced_mtime
+    global _last_synced_mtime, _last_sync_error
     last_scan = None
     try:
         if DISCOVERY_INVENTORY_PATH.exists():
@@ -521,8 +526,18 @@ def _load_discovery_inventory() -> tuple[list, str | None]:
                         raw = [raw]
                     assets_db.sync_assets(STATE_DIR, raw)
                 _last_synced_mtime = mtime
-    except Exception:
-        pass
+            _last_sync_error = None
+        else:
+            # "Discovery runs but the asset list never changes" nearly always comes down
+            # to one of these two, and both used to be swallowed silently: the run never
+            # produced a snapshot, or the snapshot exists but can't be read into the DB.
+            _last_sync_error = (
+                f"No discovery snapshot at {DISCOVERY_INVENTORY_PATH} - no discovery run has "
+                "ever completed and written one. Check the DCAnomalyAgent-Scan-Discovery task "
+                "(DCAnomalyAgent\\Test-ScheduledTasks.ps1 reports whether it ran)."
+            )
+    except Exception as exc:
+        _last_sync_error = f"Could not load {DISCOVERY_INVENTORY_PATH.name} into the asset store: {exc}"
 
     try:
         return assets_db.load_all_assets(STATE_DIR), last_scan
@@ -762,6 +777,10 @@ def _healthz_checks() -> dict:
         checks["assets_db"] = {"status": "ok", "detail": assets_db.BACKEND}
     except Exception as exc:
         checks["assets_db"] = {"status": "fail", "detail": str(exc)}
+
+    checks["discovery_sync"] = (
+        {"status": "ok"} if not _last_sync_error else {"status": "warn", "detail": _last_sync_error}
+    )
 
     ps = _detect_powershell()
     checks["powershell"] = (

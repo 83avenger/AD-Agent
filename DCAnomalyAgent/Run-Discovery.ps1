@@ -127,6 +127,21 @@ if (-not $FromAD -and -not $Cidr) {
         $Cidr   = $config.Discovery.Subnets
     }
 }
+
+# Still nothing to scan? Use the subnet this server is on. A scheduled discovery that
+# finds no targets configured used to run to completion having scanned nothing at all,
+# which looks identical to a scan that found nothing - the task reports success, the
+# asset list never changes, and there is no clue why. The local subnet is the one range
+# guaranteed to be routable and firewall-clear from here, so it is the right default.
+if (-not $FromAD -and -not $Cidr -and -not $CloudflareWarpCidr) {
+    $Cidr = @(Get-LocalSubnet)
+    if ($Cidr) {
+        Write-DiscoveryLog "No discovery targets configured - defaulting to this server's own subnet(s): $($Cidr -join ', ')"
+    } else {
+        Write-DiscoveryLog "No discovery targets configured and the local subnet could not be determined - nothing to scan." -Level ERROR
+        throw "Discovery has no targets: set Discovery.Subnets in settings.psd1, pass -Cidr, or use -FromAD."
+    }
+}
 if (-not $CloudflareWarpCidr -and $config.Discovery -and $config.Discovery.CloudflareWarpSubnets) {
     $CloudflareWarpCidr = $config.Discovery.CloudflareWarpSubnets
 }
@@ -149,9 +164,30 @@ if ($FromAD) {
     Write-DiscoveryLog "AD discovery found $($adAssets.Count) computer object(s)."
 }
 
+# Per-subnet results, not just a grand total. A range that returns nothing is either
+# empty or unreachable (routing, firewall, wrong VLAN), and those need very different
+# responses - but a single combined count can't tell them apart, so report each range.
+$subnetSummary = @()
+
 if ($Cidr) {
     Write-DiscoveryLog "Scanning network ranges: $($Cidr -join ', ')"
-    $netAssets += @(Get-NetworkAsset -Cidr $Cidr -TimeoutMs $TimeoutMs @scanPortsArgs)
+    foreach ($range in $Cidr) {
+        $before = $netAssets.Count
+        $rangeAssets = @(Get-NetworkAsset -Cidr $range -TimeoutMs $TimeoutMs @scanPortsArgs)
+        $netAssets += $rangeAssets
+        $found = $netAssets.Count - $before
+        $subnetSummary += [pscustomobject]@{
+            Subnet    = $range
+            HostsFound = $found
+            Reachable  = ($found -gt 0)
+            ScannedAt  = (Get-Date).ToString('o')
+        }
+        if ($found -gt 0) {
+            Write-DiscoveryLog "  ${range}: $found live host(s)."
+        } else {
+            Write-DiscoveryLog "  ${range}: NO hosts responded on any scanned port - the range is empty, or it is not reachable from this server (routing, firewall or VLAN)." -Level SKIP
+        }
+    }
     Write-DiscoveryLog "Network scan found $($netAssets.Count) live host(s) so far."
 }
 
@@ -159,6 +195,12 @@ if ($CloudflareWarpCidr) {
     Write-DiscoveryLog "Scanning Cloudflare WARP range(s): $($CloudflareWarpCidr -join ', ')"
     $warpAssets = @(Get-NetworkAsset -Cidr $CloudflareWarpCidr -TimeoutMs $TimeoutMs -SourceLabel 'Cloudflare WARP' @scanPortsArgs)
     Write-DiscoveryLog "Cloudflare WARP scan found $($warpAssets.Count) live host(s)."
+    $subnetSummary += [pscustomobject]@{
+        Subnet     = ($CloudflareWarpCidr -join ', ')
+        HostsFound = $warpAssets.Count
+        Reachable  = ($warpAssets.Count -gt 0)
+        ScannedAt  = (Get-Date).ToString('o')
+    }
     $netAssets += $warpAssets
 }
 
@@ -323,9 +365,10 @@ try {
 
 if ($JsonOutput) {
     @{
-        ScanTime  = (Get-Date).ToString('o')
-        Count     = $inventory.Count
-        Inventory = $inventory
+        ScanTime      = (Get-Date).ToString('o')
+        Count         = $inventory.Count
+        Inventory     = $inventory
+        SubnetSummary = $subnetSummary
     } | ConvertTo-Json -Depth 6
     return
 }
@@ -334,6 +377,14 @@ Write-Host "`nThis run found $($newInventory.Count) asset(s); consolidated inven
 $inventory | Group-Object AssetType | ForEach-Object {
     Write-Host ("  {0,-18} {1}" -f $_.Name, $_.Count)
 }
+if ($subnetSummary) {
+    Write-Host "`nPer-subnet results:"
+    foreach ($r in $subnetSummary) {
+        $state = if ($r.Reachable) { "$($r.HostsFound) host(s)" } else { 'NOT REACHABLE / empty' }
+        Write-Host ("  {0,-22} {1}" -f $r.Subnet, $state)
+    }
+}
+
 Write-Host "`nInventory written to:"
 Write-Host "  JSON:    $($export.Json)"
 Write-Host "  CSV:     $($export.Csv)"
