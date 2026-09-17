@@ -39,6 +39,12 @@ param(
     [switch]$ZeroDayScan,
     [switch]$CertificateScan,
     [switch]$SoftwareInventoryScan,
+    [switch]$PentestScan,
+    # Authorises the gated/intrusive pentest checks for THIS run only. The web UI passes it
+    # solely after a human approved an intrusive check with PENTEST_MODE=live. Without it,
+    # only read-only assessment checks run. There is no config flag that enables this - it
+    # must be an explicit, per-run decision, mirroring SOAR's destructive-action approval.
+    [switch]$AllowIntrusivePentest,
     # Skip the event-log anomaly scan. Used by the compliance/zero-day/certificate
     # Scheduled Tasks so they don't each re-run (and re-report) the anomaly scan
     # that the dedicated anomaly task already covers 3x/day.
@@ -142,6 +148,16 @@ if ($runSoftwareInventory) {
     }
     if ($config.SoftwareInventory.CrossReferenceZeroDay -and -not (Get-Module DCAnomalyAgent.ZeroDay -ErrorAction SilentlyContinue)) {
         Import-Module "$PSScriptRoot\Modules\DCAnomalyAgent.ZeroDay.psm1" -Force
+    }
+}
+
+# Pentest / security assessment follows the same explicit-request pattern. Needs its own
+# module plus Compliance (for Get-AssetTargets host resolution).
+$runPentest = $PentestScan -and (-not $config.Pentest -or $config.Pentest.Enabled)
+if ($runPentest) {
+    Import-Module "$PSScriptRoot\Modules\DCAnomalyAgent.Pentest.psm1" -Force
+    if (-not (Get-Module DCAnomalyAgent.Compliance -ErrorAction SilentlyContinue)) {
+        Import-Module "$PSScriptRoot\Modules\DCAnomalyAgent.Compliance.psm1" -Force
     }
 }
 
@@ -598,6 +614,92 @@ if ($runSoftwareInventory) {
 }
 
 # -----------------------------------------------------------------------------
+# PENTEST / SECURITY ASSESSMENT
+# -----------------------------------------------------------------------------
+$pentestFindings = @()
+$pentestErrors   = @()
+if ($runPentest) {
+    Write-ScanLog "Starting pentest / security assessment scan..."
+    $ptCfg = $config.Pentest
+    $catalogue = $null
+    try {
+        $catalogue = Import-PowerShellDataFile -Path $ptCfg.ChecksPath
+    } catch {
+        Write-ScanLog "ERROR (pentest: load checks catalogue): $_"
+    }
+
+    if ($catalogue) {
+        if ($AllowIntrusivePentest) {
+            Write-ScanLog "Pentest: intrusive checks AUTHORISED for this run (UI approval)."
+        } else {
+            Write-ScanLog "Pentest: assessment-only (intrusive checks require explicit approval)."
+        }
+
+        # UI-entered hosts (arriving as -DomainControllerOverride) are authoritative, exactly
+        # as the certificate scan treats them; otherwise resolve from the configured asset types.
+        $ptTargets = @()
+        if ($DomainControllerOverride) {
+            $ptTargets = @($config.DomainControllers)
+        } else {
+            foreach ($at in $ptCfg.ScanAssetTypes) {
+                $assetCfg = $config.Assets[$at]
+                if (-not $assetCfg) { continue }
+                try {
+                    $ptTargets += Get-AssetTargets -AssetType $at -AssetConfig $assetCfg -FallbackHosts $config.DomainControllers -InventoryPath $discoveryInventoryPath
+                } catch {
+                    Write-ScanLog "ERROR (pentest: resolve $at targets): $_"
+                }
+            }
+        }
+        $ptTargets = @($ptTargets | Where-Object { $_ } | Select-Object -Unique)
+        Write-ScanLog "Pentest targets: $($ptTargets.Count) host(s)."
+
+        $collected = @()
+
+        # Per-host, network-reachable checks.
+        foreach ($t in $ptTargets) {
+            if (-not (Test-PentestHostReachable -ComputerName $t)) {
+                $pentestErrors += New-PentestError -HostName $t -Reason 'Host not reachable on TCP 445/5985/3389 - down, firewalled, or unused address.'
+                continue
+            }
+            try { $collected += Get-ServiceExposure -ComputerName $t -Catalogue $catalogue } catch { Write-ScanLog "ERROR (pentest: service exposure on $t): $_" }
+            # TLS weakness against the common service port.
+            try { $collected += Get-TlsWeakness -TargetHost $t -Port 443 -Catalogue $catalogue } catch { }
+            if ($AllowIntrusivePentest) {
+                foreach ($ic in @($catalogue.Checks | Where-Object { $_.Intrusive -and $_.Enabled })) {
+                    try { $collected += Invoke-IntrusiveCheck -ComputerName $t -Catalogue $catalogue -CheckId $ic.Id -AllowIntrusive } catch { }
+                }
+            }
+        }
+
+        # Domain-wide AD exposure (runs once, not per host).
+        try { $collected += Get-AdExposure -Catalogue $catalogue } catch { Write-ScanLog "ERROR (pentest: AD exposure): $_" }
+
+        # Patch posture reuses the vulnerable-software cross-reference if the software scan ran.
+        try { $collected += Get-PatchConfigPosture -Catalogue $catalogue -VulnerableSoftware $vulnerableSoftware } catch { }
+
+        foreach ($row in @($collected | Where-Object { $_.Error })) {
+            Write-ScanLog "ERROR (pentest on $($row.Host)): $($row.Error)"
+            $pentestErrors += $row
+        }
+        $pentestFindings = @(ConvertTo-PentestFindingObjects -Findings $collected)
+        Write-ScanLog "Pentest complete: $($pentestFindings.Count) finding(s)."
+
+        if ($ptCfg.ReportOutputPath) {
+            $ptReportDir = Split-Path -Path $ptCfg.ReportOutputPath -Parent
+            if (-not (Test-Path $ptReportDir)) { New-Item -ItemType Directory -Path $ptReportDir -Force | Out-Null }
+            Format-PentestReport -Findings $pentestFindings -ScanTime $scanTime | Set-Content -Path $ptCfg.ReportOutputPath -Encoding UTF8
+            Write-ScanLog "Pentest report saved: $($ptCfg.ReportOutputPath)"
+        }
+
+        if ($DryRun) {
+            Write-Host "`n=== PENTEST FINDINGS ==="
+            $pentestFindings | Select-Object Severity, Host, Title | Format-Table -AutoSize | Out-String -Width 300 | Write-Host
+        }
+    }
+}
+
+# -----------------------------------------------------------------------------
 # DASHBOARD SNAPSHOT (merged across scan types)
 # Each scheduled task runs a single scan type, so we merge this run's sections
 # into the persisted snapshot rather than overwriting - the rotating dashboard
@@ -624,6 +726,7 @@ try {
     $ranCert       = $runCertScan
     $ranZeroDay    = $runZeroDay
     $ranSoftware   = $runSoftwareInventory
+    $ranPentest    = $runPentest
 
     $snapshot = [ordered]@{
         ScanTime             = $nowIso
@@ -635,12 +738,15 @@ try {
         ZeroDays             = if ($ranZeroDay)    { @($dashboardZeroDays) } elseif ($prev) { @($prev.ZeroDays) }           else { @() }
         SoftwareInventory    = if ($ranSoftware)   { @($softwareInventory) } elseif ($prev) { @($prev.SoftwareInventory) }  else { @() }
         VulnerableSoftware   = if ($ranSoftware)   { @($vulnerableSoftware) } elseif ($prev) { @($prev.VulnerableSoftware) } else { @() }
+        PentestFindings      = if ($ranPentest)    { @($pentestFindings) }   elseif ($prev) { @($prev.PentestFindings) }      else { @() }
+        PentestErrors        = if ($ranPentest)    { @($pentestErrors) }     elseif ($prev) { @($prev.PentestErrors) }        else { @() }
         Freshness            = [ordered]@{
             Anomalies    = if ($ranAnomaly)    { $nowIso } else { $prevFresh.Anomalies }
             Compliance   = if ($ranCompliance) { $nowIso } else { $prevFresh.Compliance }
             Certificates = if ($ranCert)       { $nowIso } else { $prevFresh.Certificates }
             ZeroDay      = if ($ranZeroDay)    { $nowIso } else { $prevFresh.ZeroDay }
             SoftwareInventory = if ($ranSoftware) { $nowIso } else { $prevFresh.SoftwareInventory }
+            Pentest      = if ($ranPentest)    { $nowIso } else { $prevFresh.Pentest }
         }
     }
 
@@ -670,11 +776,15 @@ if ($JsonOutput) {
         $payload['SoftwareInventory']  = $softwareInventory
         $payload['VulnerableSoftware'] = $vulnerableSoftware
     }
+    if ($runPentest) {
+        $payload['PentestFindings'] = $pentestFindings
+        $payload['PentestErrors']   = $pentestErrors
+    }
     $payload | ConvertTo-Json -Depth 8
     return
 }
 
-if (($ComplianceScan -and $config.Compliance.Enabled) -or $runCertScan -or $runSoftwareInventory) {
+if (($ComplianceScan -and $config.Compliance.Enabled) -or $runCertScan -or $runSoftwareInventory -or $runPentest) {
     return [pscustomobject]@{
         Anomalies            = $allAnomalies
         ComplianceGaps       = $complianceGaps
@@ -683,6 +793,8 @@ if (($ComplianceScan -and $config.Compliance.Enabled) -or $runCertScan -or $runS
         CertificateInventory = $certInventory
         SoftwareInventory    = $softwareInventory
         VulnerableSoftware   = $vulnerableSoftware
+        PentestFindings      = $pentestFindings
+        PentestErrors        = $pentestErrors
     }
 }
 

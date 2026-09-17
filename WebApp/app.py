@@ -171,6 +171,7 @@ def _run_scan(
     scan_types: list[str],
     frameworks: list[str],
     severities: list[str],
+    allow_intrusive_pentest: bool = False,
 ) -> tuple[dict | None, str]:
     """
     Invoke the PowerShell scanner and return (parsed_result, error_message).
@@ -204,6 +205,13 @@ def _run_scan(
         cmd.append("-SoftwareInventoryScan")
     if "zeroday" in scan_types:
         cmd.append("-ZeroDayScan")
+    if "pentest" in scan_types:
+        cmd.append("-PentestScan")
+        # Intrusive pentest checks run ONLY when this is passed, and it is passed only by
+        # the deliberate /pentest/run-intrusive approval path with PENTEST_MODE=live -
+        # never from the New Scan checkbox. Mirrors SOAR's destructive-action gate.
+        if allow_intrusive_pentest and PENTEST_MODE == "live":
+            cmd.append("-AllowIntrusivePentest")
     if "anomaly" not in scan_types:
         cmd.append("-SkipAnomalyScan")
     # A comma-joined single argument, not multiple space-separated ones: PowerShell's
@@ -567,6 +575,12 @@ def _is_online(last_seen_iso: str | None) -> bool:
 
 
 CERT_THRESHOLD_DAYS = 90   # mirrors Certificates.ThresholdDays in settings.psd1
+
+# Pentest safety gate, mirroring SOAR_MODE. off = intrusive checks can never run;
+# dryrun = assessment findings show, intrusive stays gated; live = intrusive checks may
+# run but only via the deliberate approval action, never from the New Scan checkbox.
+PENTEST_MODE = os.environ.get("PENTEST_MODE", "off").strip().lower()
+PENTEST_SEV_RANK = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Unknown": 4}
 STALE_THRESHOLD_DAYS = 14  # e.g. a laptop out on leave for 2-3 weeks
 PRESENCE_WINDOW_DAYS = 30  # window for the Endpoints page's office/remote day counts
 
@@ -777,6 +791,8 @@ def _healthz_checks() -> dict:
         checks["assets_db"] = {"status": "ok", "detail": assets_db.BACKEND}
     except Exception as exc:
         checks["assets_db"] = {"status": "fail", "detail": str(exc)}
+
+    checks["pentest_mode"] = {"status": "ok", "detail": PENTEST_MODE}
 
     checks["discovery_sync"] = (
         {"status": "ok"} if not _last_sync_error else {"status": "warn", "detail": _last_sync_error}
@@ -1414,6 +1430,7 @@ def _findings_by_source() -> dict:
         "ExpiringCertificates": data.get("ExpiringCertificates") or [],
         "ZeroDays":             data.get("ZeroDays") or [],
         "VulnerableSoftware":   data.get("VulnerableSoftware") or [],
+        "PentestFindings":      data.get("PentestFindings") or [],
     }
 
 
@@ -1688,6 +1705,155 @@ def certificates_clear_error():
     return redirect(url_for("certificates_list"))
 
 
+@app.route("/pentest")
+def pentest_page():
+    """Security-assessment findings, accumulated across every scan and grouped by host.
+
+    Mirrors the certificates/software pages: snapshot findings are merged into the
+    permanent store, then the full store is rendered, so a scan of one host never erases
+    findings for another. Every finding carries a Remediation. Intrusive checks are shown
+    as a gated panel and only run via the deliberate approval action (PENTEST_MODE=live).
+    """
+    data, demo = _load_snapshot()
+    snap_findings = data.get("PentestFindings") or []
+    snap_errors = data.get("PentestErrors") or []
+
+    if not demo:
+        try:
+            assets_db.sync_pentest(STATE_DIR, snap_findings, snap_errors)
+        except Exception:
+            pass  # a store problem must not blank the page; /healthz reports it
+
+    if demo:
+        findings, errors = snap_findings, snap_errors
+    else:
+        try:
+            findings, errors = assets_db.load_all_pentest(STATE_DIR)
+        except Exception:
+            findings, errors = snap_findings, snap_errors
+
+    counts = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0, "Unknown": 0}
+    by_category: dict = {}
+    for f in findings:
+        sev = f.get("Severity") if f.get("Severity") in counts else "Unknown"
+        f["Severity"] = sev
+        counts[sev] += 1
+        cat = (f.get("Category") or "Other").strip()
+        by_category[cat] = by_category.get(cat, 0) + 1
+
+    # Group by host so each server is one expandable row worst-severity-first.
+    hosts: dict = {}
+    for f in findings:
+        host = f.get("Host") or "(unknown)"
+        h = hosts.setdefault(host, {"host": host, "findings": [], "last_seen": None,
+                                    "counts": {"Critical": 0, "High": 0, "Medium": 0, "Low": 0, "Unknown": 0}})
+        h["findings"].append(f)
+        h["counts"][f["Severity"]] += 1
+        seen = f.get("LastSeen")
+        if seen and (h["last_seen"] is None or seen > h["last_seen"]):
+            h["last_seen"] = seen
+    for h in hosts.values():
+        h["findings"].sort(key=lambda x: PENTEST_SEV_RANK.get(x.get("Severity"), 4))
+        h["worst"] = next((s for s in ("Critical", "High", "Medium", "Low", "Unknown")
+                           if h["counts"][s]), "Unknown")
+
+    host_rows = sorted(hosts.values(),
+                       key=lambda h: (PENTEST_SEV_RANK.get(h["worst"], 4), h["host"].lower()))
+
+    sev_filter = request.args.get("severity") or ""
+    if sev_filter in counts:
+        host_rows = [h for h in host_rows if h["counts"][sev_filter]]
+    host_filter = (request.args.get("host") or "").strip().lower()
+    if host_filter:
+        host_rows = [h for h in host_rows if host_filter in h["host"].lower()]
+
+    # The gated/intrusive catalogue members, read straight from the checks sub-file so the
+    # panel names exactly what an approved intrusive run would attempt.
+    intrusive_checks = _load_pentest_intrusive_checks()
+
+    return render_template(
+        "pentest.html",
+        demo=demo,
+        findings=findings,
+        host_rows=host_rows,
+        errors=errors,
+        total=len(findings),
+        counts=counts,
+        host_count=len(hosts),
+        by_category=sorted(by_category.items(), key=lambda kv: -kv[1])[:12],
+        severity_filter=sev_filter,
+        host_filter=request.args.get("host") or "",
+        pentest_mode=PENTEST_MODE,
+        intrusive_checks=intrusive_checks,
+    )
+
+
+def _load_pentest_intrusive_checks() -> list:
+    """The intrusive check catalogue, for the gated panel. Best-effort: a parsing problem
+    must not take the page down, so it returns [] rather than raising."""
+    path = APP_ROOT.parent / "DCAnomalyAgent" / "Config" / "pentest-checks.psd1"
+    checks = []
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+    except OSError:
+        return []
+    # Tiny, tolerant extraction: pull @{ ... } blocks that declare Intrusive = $true and
+    # read their Id/Title/Severity/KaliTool. Avoids a PowerShell dependency just to render
+    # a list; the authoritative catalogue is still the .psd1 the scanner reads.
+    for block in re.findall(r"@\{[^{}]*\}", text):
+        if "Intrusive = $true" not in block:
+            continue
+        def field(name):
+            m = re.search(rf"{name}\s*=\s*'([^']*)'", block)
+            return m.group(1) if m else ""
+        enabled = "Enabled = $true" in block
+        checks.append({
+            "Id": field("Id"), "Title": field("Title"),
+            "Severity": field("Severity"), "KaliTool": field("KaliTool"),
+            "Enabled": enabled,
+        })
+    return checks
+
+
+@app.route("/pentest/findings/clear", methods=["POST"])
+def pentest_clear_finding():
+    """Dismiss one finding (remediated, or a reviewed false positive)."""
+    key = (request.form.get("finding_key") or "").strip()
+    if key:
+        _audit("pentest_finding_dismiss", f"key={key}")
+        try:
+            assets_db.delete_pentest_finding(STATE_DIR, key)
+        except Exception:
+            pass
+    return redirect(url_for("pentest_page"))
+
+
+@app.route("/pentest/run-intrusive", methods=["POST"])
+def pentest_run_intrusive():
+    """Launch an intrusive pentest run. This is the ONLY path that authorises the gated
+    checks, and it refuses unless PENTEST_MODE=live - the deliberate, audited approval
+    step that mirrors SOAR's destructive-action approval. Assessment-only runs go through
+    the normal New Scan page instead."""
+    if PENTEST_MODE != "live":
+        return render_template("index.html",
+                               error="Intrusive pentest checks require PENTEST_MODE=live. "
+                                     "Set it and restart the web UI, then approve the run again.")
+    raw = (request.form.get("domain_controllers") or "").strip()
+    typed = [p.strip() for p in raw.replace("\n", ",").split(",") if p.strip()]
+    target_err = _validate_targets(typed)
+    if target_err:
+        return render_template("index.html", error=target_err)
+    dcs, target_err = _expand_scan_targets(raw)
+    if target_err:
+        return render_template("index.html", error=target_err)
+    if not dcs:
+        return render_template("index.html", error="Enter at least one target host for the intrusive run.")
+
+    _audit("pentest_intrusive_run", f"approved_by={_remote_user()} targets={dcs}")
+    job_id = _submit_job("scan", _scan_job, dcs, ["pentest"], [], [], True)
+    return render_template("job_wait.html", job_id=job_id, kind="scan")
+
+
 @app.route("/software")
 def software_list():
     """Every installed-software record collected so far, across every device and every run.
@@ -1954,7 +2120,7 @@ def scan():
     return render_template("job_wait.html", job_id=job_id, kind="scan")
 
 
-def _scan_job(dcs, scan_types, frameworks, severities) -> dict:
+def _scan_job(dcs, scan_types, frameworks, severities, allow_intrusive_pentest=False) -> dict:
     """Runs on the job thread pool - see _submit_job. Must not touch the Flask
     session or request context (neither exist off the request thread)."""
     pwsh = _detect_powershell()
@@ -1962,7 +2128,8 @@ def _scan_job(dcs, scan_types, frameworks, severities) -> dict:
         result = _mock_result(dcs)
         demo = True
     else:
-        result, err = _run_scan(dcs, scan_types, frameworks, severities)
+        result, err = _run_scan(dcs, scan_types, frameworks, severities,
+                                allow_intrusive_pentest=allow_intrusive_pentest)
         if result is None:
             raise RuntimeError(err or "unknown error")
         demo = False

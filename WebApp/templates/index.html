@@ -83,6 +83,11 @@
               {{'checked' if 'zeroday' in cur_types else ''}}>
             <label for="st_zeroday">☣️ Zero-Day / KEV</label>
           </div>
+          <div class="checkbox-chip">
+            <input type="checkbox" id="st_pentest" name="scan_types" value="pentest"
+              {{'checked' if 'pentest' in cur_types else ''}}>
+            <label for="st_pentest">🛡️ Pentest (assessment)</label>
+          </div>
         </div>
         <p style="font-size:.78rem; color:var(--muted); margin-top:.4rem;">
           Anomaly: event log analysis + UEBA baseline.<br>
@@ -90,6 +95,7 @@
           Certificate: machine stores + TLS endpoints + CA, flags expiry within 90 days.<br>
           Software Inventory: installed software by host, categorized Desktop/Laptop/Server/DC, cross-referenced against zero-days.<br>
           Zero-Day / KEV: pulls the CISA KEV + NVD feeds and matches them against collected software. Independent of the target hosts above.<br>
+          Pentest: read-only security assessment (service exposure, TLS weakness, AD/identity exposure, patch posture), each finding with a remediation. Intrusive checks are NOT run from here — they are gated on the Pentest page.<br>
           <strong>Only the types ticked here run.</strong> Leave a box unticked and that scan is skipped entirely.
         </p>
       </div>

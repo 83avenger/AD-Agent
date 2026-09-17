@@ -164,6 +164,39 @@ _SCHEMA_SOFTWARE_ISSUES = """
     )
 """
 
+# Pentest findings, same accumulate-across-scans reasoning as certificates/software: a
+# scan reaches only the hosts of that run, so results must merge rather than overwrite.
+# Keyed by (host, check, evidence) so re-running a check on the same host updates one row
+# instead of duplicating, and a finding on host A survives a scan that only touched host B.
+# Every finding carries a non-empty remediation (enforced upstream in the module and here).
+_SCHEMA_PENTEST = """
+    CREATE TABLE IF NOT EXISTS pentest_findings (
+        finding_key TEXT PRIMARY KEY,
+        host        TEXT NOT NULL,
+        category    TEXT,
+        check_id    TEXT,
+        title       TEXT,
+        severity    TEXT,
+        evidence    TEXT,
+        remediation TEXT,
+        kali_tool   TEXT,
+        source      TEXT,
+        first_seen  TEXT NOT NULL,
+        last_seen   TEXT NOT NULL
+    )
+"""
+
+# Targets a pentest run could not reach at all, keyed by host so a host that later
+# assesses cleanly clears its own row (mirrors software_issues / cert_errors).
+_SCHEMA_PENTEST_ERRORS = """
+    CREATE TABLE IF NOT EXISTS pentest_errors (
+        host       TEXT PRIMARY KEY,
+        reason     TEXT,
+        first_seen TEXT NOT NULL,
+        last_seen  TEXT NOT NULL
+    )
+"""
+
 # Collection failures, keyed by target so a host that later succeeds replaces (and then
 # clears) its own error rather than leaving a permanent scar on the page.
 _SCHEMA_CERT_ERRORS = """
@@ -196,6 +229,8 @@ def _migrate(conn) -> None:
     cur.execute(_SCHEMA_CERT_ERRORS)
     cur.execute(_SCHEMA_SOFTWARE)
     cur.execute(_SCHEMA_SOFTWARE_ISSUES)
+    cur.execute(_SCHEMA_PENTEST)
+    cur.execute(_SCHEMA_PENTEST_ERRORS)
 
     have = _existing_columns(conn)
     missing = {c: t for c, t in _ADDED_COLUMNS.items() if c not in have}
@@ -856,6 +891,119 @@ def load_all_software(state_dir: Path) -> tuple[list, list]:
             "FirstSeen": r["first_seen"], "LastSeen": r["last_seen"],
         } for r in issue_rows]
         return software, issues
+    finally:
+        conn.close()
+
+
+def _pentest_key(host: str, check_id: str, evidence: str) -> str:
+    return "|".join(x.strip().lower() for x in (host or "", check_id or "", evidence or ""))
+
+
+def sync_pentest(state_dir: Path, findings: list, errors: list) -> None:
+    """Merge one pentest run's findings into the permanent store.
+
+    Nothing is deleted on scan: a host absent from this run keeps its last known findings,
+    stamped with when they were seen. Mirrors sync_software exactly."""
+    now = datetime.utcnow().isoformat()
+    conn = get_connection(state_dir)
+    try:
+        cur = conn.cursor()
+        ph = "%s" if BACKEND == "postgres" else "?"
+        assessed_hosts = set()
+
+        for f in findings or []:
+            host = (f.get("Host") or f.get("ComputerName") or "").strip()
+            check_id = (f.get("CheckId") or "").strip()
+            evidence = (f.get("Evidence") or "").strip()
+            if not host or not check_id:
+                continue
+            assessed_hosts.add(host)
+            # Remediation is mandatory - a finding with no fix is not actionable. The
+            # module enforces this too; this is the backstop so a bad row never lands.
+            remediation = (f.get("Remediation") or "").strip()
+            if not remediation:
+                remediation = "No remediation supplied - review this check definition."
+            key = _pentest_key(host, check_id, evidence)
+            row = (
+                host, f.get("Category"), check_id, f.get("Title"), f.get("Severity"),
+                evidence, remediation, f.get("KaliTool"), f.get("Source"), now,
+            )
+            cur.execute(f"SELECT 1 FROM pentest_findings WHERE finding_key = {ph}", (key,))
+            if cur.fetchone():
+                cur.execute(f"""
+                    UPDATE pentest_findings SET host={ph}, category={ph}, check_id={ph},
+                        title={ph}, severity={ph}, evidence={ph}, remediation={ph},
+                        kali_tool={ph}, source={ph}, last_seen={ph}
+                    WHERE finding_key={ph}
+                """, row + (key,))
+            else:
+                cur.execute(f"""
+                    INSERT INTO pentest_findings (host, category, check_id, title, severity,
+                        evidence, remediation, kali_tool, source, last_seen, finding_key, first_seen)
+                    VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph})
+                """, row + (key, now))
+
+        # A host that just assessed successfully is not failing any more.
+        for host in assessed_hosts:
+            cur.execute(f"DELETE FROM pentest_errors WHERE host = {ph}", (host,))
+
+        for e in errors or []:
+            host = (e.get("Host") or e.get("ComputerName") or "").strip()
+            if not host or host in assessed_hosts:
+                continue
+            reason = e.get("Reason") or e.get("Error") or "Unknown error"
+            cur.execute(f"SELECT 1 FROM pentest_errors WHERE host = {ph}", (host,))
+            if cur.fetchone():
+                cur.execute(f"UPDATE pentest_errors SET reason={ph}, last_seen={ph} WHERE host={ph}",
+                            (reason, now, host))
+            else:
+                cur.execute(f"INSERT INTO pentest_errors (host, reason, first_seen, last_seen)"
+                            f" VALUES ({ph}, {ph}, {ph}, {ph})", (host, reason, now, now))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def load_all_pentest(state_dir: Path) -> tuple[list, list]:
+    """Every pentest finding ever recorded, plus the hosts currently unreachable."""
+    conn = get_connection(state_dir)
+    try:
+        if BACKEND == "postgres":
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            cur.execute("SELECT * FROM pentest_findings ORDER BY host, severity, check_id")
+            f_rows = cur.fetchall()
+            cur.execute("SELECT * FROM pentest_errors ORDER BY host")
+            e_rows = cur.fetchall()
+        else:
+            f_rows = conn.execute("SELECT * FROM pentest_findings ORDER BY host, severity, check_id").fetchall()
+            e_rows = conn.execute("SELECT * FROM pentest_errors ORDER BY host").fetchall()
+
+        findings = [{
+            "FindingKey": r["finding_key"],
+            "Host": r["host"], "Category": r["category"], "CheckId": r["check_id"],
+            "Title": r["title"], "Severity": r["severity"], "Evidence": r["evidence"],
+            "Remediation": r["remediation"], "KaliTool": r["kali_tool"], "Source": r["source"],
+            "FirstSeen": r["first_seen"], "LastSeen": r["last_seen"],
+        } for r in f_rows]
+        errors = [{
+            "Host": r["host"], "Reason": r["reason"],
+            "FirstSeen": r["first_seen"], "LastSeen": r["last_seen"],
+        } for r in e_rows]
+        return findings, errors
+    finally:
+        conn.close()
+
+
+def delete_pentest_finding(state_dir: Path, finding_key: str) -> bool:
+    """Dismiss one finding (fixed, or a false positive you don't want to keep seeing)."""
+    conn = get_connection(state_dir)
+    try:
+        cur = conn.cursor()
+        ph = "%s" if BACKEND == "postgres" else "?"
+        cur.execute(f"DELETE FROM pentest_findings WHERE finding_key = {ph}", (finding_key,))
+        deleted = cur.rowcount > 0
+        conn.commit()
+        return deleted
     finally:
         conn.close()
 

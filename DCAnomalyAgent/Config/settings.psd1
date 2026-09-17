@@ -226,6 +226,20 @@
         ReportOutputPath = "$PSScriptRoot\..\State\software-inventory-report.md"
     }
 
+    # Pentest / security assessment. Turns the estate's own data plus non-intrusive
+    # probes into prioritised, remediation-carrying findings (service exposure, TLS
+    # weakness, AD/identity exposure, patch/config posture). Read-only assessment checks
+    # run here; INTRUSIVE checks never run from a scheduled task or the New Scan checkbox -
+    # they require PENTEST_MODE=live and explicit per-run approval in the web UI. No
+    # credential testing in v1. The check catalogue (severities, thresholds, remediations,
+    # Kali-tool mapping) lives in the sub-file below.
+    Pentest = @{
+        Enabled          = $true
+        ScanAssetTypes   = @('DomainController', 'MemberServer', 'Workstation')
+        ChecksPath       = "$PSScriptRoot\pentest-checks.psd1"
+        ReportOutputPath = "$PSScriptRoot\..\State\pentest-report.md"
+    }
+
     # Third-party integrations that extend discovery beyond what an agentless
     # WinRM/TCP scan alone can see. All disabled/empty until credentials are
     # supplied by the relevant team - see the web UI's Integrations page for what
