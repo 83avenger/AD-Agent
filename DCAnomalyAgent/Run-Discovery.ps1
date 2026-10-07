@@ -103,6 +103,11 @@ function Import-AgentConfig {
 
 $config = Import-AgentConfig -Path $ConfigPath
 
+# Product license gate (non-destructive, default-off) - see DCAnomalyAgent.Licensing.psm1.
+# Stops before any discovery if enforcement is on and the license is invalid; touches nothing.
+Import-Module "$PSScriptRoot\Modules\DCAnomalyAgent.Licensing.psm1" -Force -ErrorAction SilentlyContinue
+if (Get-Command Assert-ProductLicense -ErrorAction SilentlyContinue) { $null = Assert-ProductLicense }
+
 function Write-DiscoveryLog {
     <#
     .SYNOPSIS

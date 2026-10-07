@@ -6,6 +6,15 @@ DCAnomalyAgent/State/*.db-wal
 DCAnomalyAgent/State/*.db-shm
 # Vendor/API secrets saved from the web UI's Integrations pages - never commit these.
 DCAnomalyAgent/Config/integration-secrets.json
+DCAnomalyAgent/Config/integration-secrets.json.enc
+# Product keys, licenses and built release artifacts - developer-held, never in git.
+Build/keys/
+Build/out/
+Build/dist/
+*.secure
+*.dpapi
+DCAnomalyAgent/Config/license.key
+# The embedded license PUBLIC key is safe to commit; the private key and licenses are not.
 WebApp/reports/
 DCAnomalyAgent/bin/
 WebApp/__pycache__/

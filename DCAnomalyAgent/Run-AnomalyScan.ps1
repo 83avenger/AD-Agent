@@ -112,6 +112,12 @@ if ($ZeroDayScan -or ($config -and $config.ZeroDay -and $config.ZeroDay.Enabled)
 $config = Import-AgentConfig -Path $ConfigPath
 $scanTime = Get-Date
 
+# Product license gate (non-destructive, default-off). If enforcement is on and the license
+# is invalid, stop here BEFORE any scanning - no data is read or changed. Off by default so
+# an unlicensed/dev deployment behaves exactly as before.
+Import-Module "$PSScriptRoot\Modules\DCAnomalyAgent.Licensing.psm1" -Force -ErrorAction SilentlyContinue
+if (Get-Command Assert-ProductLicense -ErrorAction SilentlyContinue) { $null = Assert-ProductLicense }
+
 # Asset types with Assets.<Type>.DiscoverFromInventory = $true pull their target list from
 # here (Run-Discovery.ps1's output) instead of - or in addition to - a static Hosts list.
 $discoveryInventoryPath = "$PSScriptRoot\State\asset-inventory.json"
