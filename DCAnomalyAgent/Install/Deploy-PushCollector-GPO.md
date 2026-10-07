@@ -18,15 +18,22 @@ already have approved rules. Don't deploy this to them.
 
 ## 1. Generate a token and enable the endpoint
 
-On the jump server, generate a random token:
+On the jump server, the helper does it in one step — generates the token, sets it at Machine
+scope, restarts the web UI, and prints the value you need in step 3:
 
 ```powershell
-$token = [Convert]::ToBase64String((1..32 | ForEach-Object { Get-Random -Max 256 }))
+.\Set-CollectorToken.ps1 -RestartWebUI
+```
+
+Or by hand. Generate a random token (hex, so it has no `=` padding to trip you up):
+
+```powershell
+$token = -join ((1..32 | ForEach-Object { '{0:x2}' -f (Get-Random -Max 256) }))
 $token   # copy this - you need it in step 3
 ```
 
 Set it as a machine environment variable so the web UI's Scheduled Task inherits it, then
-restart the web UI:
+restart the web UI. Mind the argument order — **name first, value second**:
 
 ```powershell
 [Environment]::SetEnvironmentVariable('COLLECTOR_TOKEN', $token, 'Machine')

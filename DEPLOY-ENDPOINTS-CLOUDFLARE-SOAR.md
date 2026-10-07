@@ -69,13 +69,26 @@ enabled yet; `/soar` should say SOAR is disabled. Both are the expected "off" st
 
 ### 1.1 Enable the endpoint
 
+Easiest — the helper generates the token, sets it, restarts the UI, and prints the value to
+copy to each collector:
+
 ```powershell
-$token = [Convert]::ToBase64String((1..32 | ForEach-Object { Get-Random -Max 256 }))
+.\DCAnomalyAgent\Install\Set-CollectorToken.ps1 -RestartWebUI
+[Environment]::SetEnvironmentVariable('CORPORATE_NETWORKS', '172.29.0.0/16,10.44.0.0/16', 'Machine')
+[Environment]::SetEnvironmentVariable('CORPORATE_DNS_SUFFIX', 'corp.example.local', 'Machine')
+```
+
+Or by hand. Note the argument order — **name first (`'COLLECTOR_TOKEN'`), value (`$token`)
+second**; putting the token in the name slot fails with "name cannot contain equal
+character". The hex form below also avoids `=` padding entirely:
+
+```powershell
+$token = -join ((1..32 | ForEach-Object { '{0:x2}' -f (Get-Random -Max 256) }))
 $token    # copy this
 
 [Environment]::SetEnvironmentVariable('COLLECTOR_TOKEN', $token, 'Machine')
 [Environment]::SetEnvironmentVariable('CORPORATE_NETWORKS', '172.29.0.0/16,10.44.0.0/16', 'Machine')
-[Environment]::SetEnvironmentVariable('CORPORATE_DNS_SUFFIX', 'amg.local', 'Machine')
+[Environment]::SetEnvironmentVariable('CORPORATE_DNS_SUFFIX', 'corp.example.local', 'Machine')
 
 Stop-ScheduledTask -TaskName 'AD-Agent-WebUI'; Start-ScheduledTask -TaskName 'AD-Agent-WebUI'
 ```
@@ -243,7 +256,7 @@ Each stage is independent and reverts by unsetting one variable plus a restart:
 [Environment]::SetEnvironmentVariable('SOAR_MODE', $null, 'Machine')
 
 # Disable push check-ins (endpoint returns 503; GPO tasks fail harmlessly and log locally)
-[Environment]::SetEnvironmentVariable('COLLECTOR_TOKEN', $null, 'Machine')
+[Environment]::SetEnvironmentVariable('COLLECTOR_TOKEN', $null, 'Machine')   # or: .\Install\Set-CollectorToken.ps1 -Clear
 
 # Disable Cloudflare sync
 Disable-ScheduledTask -TaskName 'DCAnomalyAgent-Scan-CloudflareSync'

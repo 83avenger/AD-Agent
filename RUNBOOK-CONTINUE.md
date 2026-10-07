@@ -159,13 +159,24 @@ Solves the laptop problems directly: unreachable VLANs, DHCP churn, devices asle
 
 ### 4.1 Enable the endpoint
 
+Easiest — generates the token, sets it, restarts the UI, prints the value to copy to collectors:
+
 ```powershell
-$token = [Convert]::ToBase64String((1..32 | ForEach-Object { Get-Random -Max 256 }))
+.\DCAnomalyAgent\Install\Set-CollectorToken.ps1 -RestartWebUI
+[Environment]::SetEnvironmentVariable('CORPORATE_NETWORKS', '172.29.0.0/16,10.44.0.0/16', 'Machine')
+[Environment]::SetEnvironmentVariable('CORPORATE_DNS_SUFFIX', 'corp.example.local', 'Machine')
+```
+
+Or by hand — **name first (`'COLLECTOR_TOKEN'`), value (`$token`) second** (the token in the
+name slot fails with "name cannot contain equal character"); the hex form avoids `=` too:
+
+```powershell
+$token = -join ((1..32 | ForEach-Object { '{0:x2}' -f (Get-Random -Max 256) }))
 $token   # record this
 
 [Environment]::SetEnvironmentVariable('COLLECTOR_TOKEN', $token, 'Machine')
 [Environment]::SetEnvironmentVariable('CORPORATE_NETWORKS', '172.29.0.0/16,10.44.0.0/16', 'Machine')
-[Environment]::SetEnvironmentVariable('CORPORATE_DNS_SUFFIX', 'amg.local', 'Machine')
+[Environment]::SetEnvironmentVariable('CORPORATE_DNS_SUFFIX', 'corp.example.local', 'Machine')
 
 Stop-ScheduledTask -TaskName 'AD-Agent-WebUI'; Start-ScheduledTask -TaskName 'AD-Agent-WebUI'
 ```
