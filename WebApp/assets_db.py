@@ -589,6 +589,44 @@ def load_all_assets(state_dir: Path) -> list:
         conn.close()
 
 
+def _clear_tables(state_dir: Path, tables: list) -> int:
+    """DELETE every row from each named table, returning the total rows removed. Table
+    names are our own literals (never user input), so interpolating them is safe. Used by
+    the per-page 'Clear all' buttons."""
+    conn = get_connection(state_dir)
+    try:
+        cur = conn.cursor()
+        total = 0
+        for t in tables:
+            cur.execute(f"DELETE FROM {t}")
+            total += cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+        conn.commit()
+        return total
+    finally:
+        conn.close()
+
+
+def clear_all_assets(state_dir: Path) -> int:
+    """Wipe the discovered-asset inventory. The caller must also clear the discovery JSON
+    snapshot, or _load_discovery_inventory re-imports it on the next page load."""
+    return _clear_tables(state_dir, ["assets"])
+
+
+def clear_all_certificates(state_dir: Path) -> int:
+    """Wipe all certificate findings and their collection-error rows."""
+    return _clear_tables(state_dir, ["certificates", "cert_errors"])
+
+
+def clear_all_software(state_dir: Path) -> int:
+    """Wipe all software inventory and its collection-issue rows."""
+    return _clear_tables(state_dir, ["software", "software_issues"])
+
+
+def clear_all_pentest(state_dir: Path) -> int:
+    """Wipe all pentest findings and their unreachable-target rows."""
+    return _clear_tables(state_dir, ["pentest_findings", "pentest_errors"])
+
+
 def delete_asset(state_dir: Path, key: str) -> bool:
     """Manually remove one asset from the inventory (e.g. a decommissioned
     device or a stray duplicate). Returns True if a row was actually deleted."""

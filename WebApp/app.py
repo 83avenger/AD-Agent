@@ -1388,6 +1388,42 @@ def assets_delete():
     return redirect(url_for("assets_list"))
 
 
+def _clear_snapshot_keys(keys: list) -> None:
+    """Empty the named sections of latest-scan.json so a cleared store does not refill from
+    the snapshot on the next page load (the cert/software/pentest routes re-sync from it
+    every GET). Best-effort: a missing or unreadable snapshot is not an error here."""
+    try:
+        if not SNAPSHOT_PATH.exists():
+            return
+        with open(SNAPSHOT_PATH, encoding="utf-8-sig") as fh:
+            data = json.load(fh)
+        if not isinstance(data, dict):
+            return
+        for k in keys:
+            data[k] = []
+        with open(SNAPSHOT_PATH, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+    except (OSError, ValueError):
+        pass
+
+
+@app.route("/assets/clear", methods=["POST"])
+def assets_clear():
+    """Wipe the entire discovered-asset inventory. Also empties the discovery JSON snapshot
+    and resets the sync marker, so cleared assets do not re-import on the next load or a
+    web-app restart. A future Discovery scan repopulates it."""
+    global _last_synced_mtime
+    removed = assets_db.clear_all_assets(STATE_DIR)
+    try:
+        with open(DISCOVERY_INVENTORY_PATH, "w", encoding="utf-8") as fh:
+            fh.write("[]")
+    except OSError:
+        pass
+    _last_synced_mtime = None
+    _audit("assets_clear", f"removed={removed}")
+    return redirect(url_for("assets_list"))
+
+
 @app.route("/assets")
 def assets_list():
     """Full, always-available table of every discovered asset (not the dashboard's
@@ -1705,6 +1741,16 @@ def certificates_clear_error():
     return redirect(url_for("certificates_list"))
 
 
+@app.route("/certificates/clear", methods=["POST"])
+def certificates_clear():
+    """Wipe every certificate finding and collection error. Re-running a Certificate Scan
+    repopulates the page."""
+    removed = assets_db.clear_all_certificates(STATE_DIR)
+    _clear_snapshot_keys(["CertificateInventory", "ExpiringCertificates"])
+    _audit("certificates_clear", f"removed={removed}")
+    return redirect(url_for("certificates_list"))
+
+
 @app.route("/pentest")
 def pentest_page():
     """Security-assessment findings, accumulated across every scan and grouped by host.
@@ -1825,6 +1871,16 @@ def pentest_clear_finding():
             assets_db.delete_pentest_finding(STATE_DIR, key)
         except Exception:
             pass
+    return redirect(url_for("pentest_page"))
+
+
+@app.route("/pentest/clear", methods=["POST"])
+def pentest_clear():
+    """Wipe every pentest finding and unreachable-target row. Re-running a Pentest scan
+    repopulates the page."""
+    removed = assets_db.clear_all_pentest(STATE_DIR)
+    _clear_snapshot_keys(["PentestFindings", "PentestErrors"])
+    _audit("pentest_clear", f"removed={removed}")
     return redirect(url_for("pentest_page"))
 
 
@@ -1955,6 +2011,17 @@ def software_list():
         only=request.args.get("only") or "",
         host_filter=request.args.get("host") or "",
     )
+
+
+@app.route("/software/clear", methods=["POST"])
+def software_clear():
+    """Wipe every software-inventory record and collection-issue row. Re-running a Software
+    Inventory scan repopulates it. Note: software pushed by the endpoint collector lives on
+    asset records and reappears here unless the Assets inventory is also cleared."""
+    removed = assets_db.clear_all_software(STATE_DIR)
+    _clear_snapshot_keys(["SoftwareInventory", "VulnerableSoftware"])
+    _audit("software_clear", f"removed={removed}")
+    return redirect(url_for("software_list"))
 
 
 @app.route("/discovery/run", methods=["POST"])
