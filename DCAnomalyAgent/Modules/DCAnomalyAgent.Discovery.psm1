@@ -48,9 +48,19 @@ function Get-ADAsset {
             else { 'Unknown' }
 
         $hostName = if ($_.DNSHostName) { $_.DNSHostName } else { $_.Name }
+        # Category is the human device class, kept separate from the coarse AssetType so it
+        # survives a later network-only scan. AD's OS/role gives Server vs Workstation vs DC
+        # without WinRM; the chassis probe in Run-Discovery refines Workstation -> Desktop/Laptop.
+        $category =
+            if ($assetType -eq 'DomainController') { 'Domain Controller' }
+            elseif ($assetType -eq 'MemberServer') { 'Server' }
+            elseif ($assetType -eq 'Workstation')  { 'Workstation' }
+            elseif ($assetType -eq 'Linux')        { 'Linux' }
+            else { 'Unknown' }
         [pscustomobject]@{
             Name          = $hostName
             AssetType     = $assetType
+            Category      = $category
             OS            = $os
             OSVersion     = "$($_.OperatingSystemVersion)"
             Source        = 'ActiveDirectory'
@@ -517,7 +527,7 @@ function Export-AssetInventory {
     $Inventory | ConvertTo-Json -Depth 6 | Set-Content -Path $jsonPath -Encoding UTF8
     # Software is a nested per-host array (kept in the JSON for the dashboard's per-device
     # drill-down) and is intentionally left out of the flat CSV.
-    $Inventory | Select-Object Name, IP, AssetType, OS, OpenPorts, Source, LastSeen |
+    $Inventory | Select-Object Name, IP, AssetType, Category, OS, OpenPorts, Source, LastSeen |
         Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8
 
     # Emit a settings.psd1-style Assets snippet

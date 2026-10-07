@@ -48,6 +48,12 @@
   <div class="checkbox-group">
     {% for t, c in by_type %}<span class="badge badge-low">{{ t }}: {{ c }}</span>{% endfor %}
   </div>
+  {% if by_category %}
+  <div class="card-header" style="margin-top:1rem;">By category</div>
+  <div class="checkbox-group">
+    {% for t, c in by_category %}<span class="badge badge-low">{{ t }}: {{ c }}</span>{% endfor %}
+  </div>
+  {% endif %}
   <div class="card-header" style="margin-top:1rem;">By source</div>
   <div class="checkbox-group">
     {% for s, c in by_source %}<span class="badge badge-low">{{ s }}: {{ c }}</span>{% endfor %}
@@ -74,13 +80,20 @@
       font-size:.875rem; margin-bottom:1rem;" onkeyup="filterAssets()">
   <div class="tbl-wrap">
     <table id="assetTable">
-      <thead><tr><th>Name</th><th>IP</th><th>Type</th><th>OS</th><th>Source</th><th>Status</th><th>Last Seen</th><th></th></tr></thead>
+      <thead><tr><th>Name</th><th>IP</th><th>Type</th><th>Category</th><th>OS</th><th>Source</th><th>Status</th><th>Last Seen</th><th></th></tr></thead>
       <tbody>
         {% for a in assets %}
         <tr>
           <td>{{ a.Name }}</td>
           <td>{{ a.IP }}</td>
           <td>{{ a.AssetType }}</td>
+          <td>
+            {% if a.Category and a.Category != 'Unknown' %}
+              <span class="badge badge-low">{{ a.Category }}</span>
+            {% else %}
+              <span style="color:var(--muted);">—</span>
+            {% endif %}
+          </td>
           <td>{{ a.OS or '—' }}</td>
           <td>{{ a.Source }}</td>
           <td>
@@ -104,7 +117,7 @@
           </td>
         </tr>
         {% else %}
-        <tr><td colspan="8" style="text-align:center; color:var(--muted);">No assets discovered yet.</td></tr>
+        <tr><td colspan="9" style="text-align:center; color:var(--muted);">No assets discovered yet.</td></tr>
         {% endfor %}
       </tbody>
     </table>

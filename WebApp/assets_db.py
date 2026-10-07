@@ -81,6 +81,11 @@ _ADDED_COLUMNS = {
     "last_checkin":   "TEXT",   # when the device last pushed its own inventory to us
     "checkin_source": "TEXT",   # 'PushCollector' | 'CloudflareWARP'
     "checkin_user":   "TEXT",   # logged-on user (push collector) / WARP-enrolled user email
+    # Device class (Desktop/Laptop/Server/Domain Controller/...), kept separate from
+    # asset_type (the coarse Windows/Linux/NetworkDevice kind) so a device's class is not
+    # lost when a later coarse scan re-reports the host. Nullable; _row_to_asset derives a
+    # best-effort value when it's empty.
+    "category":       "TEXT",
     # A laptop carried home every night checks in from the office by day and from home
     # by evening/weekend. Keeping only "last check-in" would mean each location's
     # timestamp erases the other's, so "when was this device last actually in the
@@ -293,10 +298,16 @@ def sync_assets(state_dir: Path, assets: list) -> None:
             software = a.get("Software")
             name = (a.get("Name") or "").strip().lower()
             ip = (a.get("IP") or "").strip().lower()
+            # A coarse AssetType ('Windows'/'Unknown'/empty) must not overwrite a more
+            # specific class already stored, and a null OS/category must not wipe a known
+            # one - otherwise a NetworkScan-only run relabels AD/WinRM-classified hosts back
+            # to 'Windows'. The upsert below COALESCEs os/category and guards asset_type;
+            # 'category' is passed explicitly so the WinRM/AD class survives across runs.
+            category = a.get("Category")
             row = (
                 key, a.get("Name"), a.get("IP"), a.get("AssetType"), a.get("OS"),
                 a.get("OpenPorts"), a.get("Source"), a.get("LastSeen"), a.get("CollectionNote"),
-                json.dumps(software) if software else None, now, now,
+                json.dumps(software) if software else None, category, now, now,
             )
             if BACKEND == "postgres":
                 # A host discovered first as a bare IP (no reverse DNS yet) that later
@@ -307,18 +318,21 @@ def sync_assets(state_dir: Path, assets: list) -> None:
                     cur.execute("DELETE FROM assets WHERE dedup_key = %s AND dedup_key != %s", (ip, key))
                 cur.execute("""
                     INSERT INTO assets (dedup_key, name, ip, asset_type, os, open_ports,
-                        source, last_seen, collection_note, software_json, first_seen, updated_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        source, last_seen, collection_note, software_json, category, first_seen, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (dedup_key) DO UPDATE SET
                         name            = EXCLUDED.name,
                         ip              = EXCLUDED.ip,
-                        asset_type      = EXCLUDED.asset_type,
-                        os              = EXCLUDED.os,
+                        asset_type      = CASE
+                            WHEN EXCLUDED.asset_type IS NULL OR EXCLUDED.asset_type IN ('', 'Windows', 'Unknown')
+                                THEN assets.asset_type ELSE EXCLUDED.asset_type END,
+                        os              = COALESCE(EXCLUDED.os, assets.os),
                         open_ports      = EXCLUDED.open_ports,
                         source          = EXCLUDED.source,
                         last_seen       = COALESCE(EXCLUDED.last_seen, assets.last_seen),
                         collection_note = EXCLUDED.collection_note,
                         software_json   = COALESCE(EXCLUDED.software_json, assets.software_json),
+                        category        = COALESCE(EXCLUDED.category, assets.category),
                         updated_at      = EXCLUDED.updated_at
                 """, row)
             else:
@@ -326,18 +340,21 @@ def sync_assets(state_dir: Path, assets: list) -> None:
                     cur.execute("DELETE FROM assets WHERE dedup_key = ? AND dedup_key != ?", (ip, key))
                 cur.execute("""
                     INSERT INTO assets (dedup_key, name, ip, asset_type, os, open_ports,
-                        source, last_seen, collection_note, software_json, first_seen, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        source, last_seen, collection_note, software_json, category, first_seen, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(dedup_key) DO UPDATE SET
                         name            = excluded.name,
                         ip              = excluded.ip,
-                        asset_type      = excluded.asset_type,
-                        os              = excluded.os,
+                        asset_type      = CASE
+                            WHEN excluded.asset_type IS NULL OR excluded.asset_type IN ('', 'Windows', 'Unknown')
+                                THEN assets.asset_type ELSE excluded.asset_type END,
+                        os              = COALESCE(excluded.os, assets.os),
                         open_ports      = excluded.open_ports,
                         source          = excluded.source,
                         last_seen       = COALESCE(excluded.last_seen, assets.last_seen),
                         collection_note = excluded.collection_note,
                         software_json   = COALESCE(excluded.software_json, assets.software_json),
+                        category        = COALESCE(excluded.category, assets.category),
                         updated_at      = excluded.updated_at
                 """, row)
         conn.commit()
@@ -345,12 +362,36 @@ def sync_assets(state_dir: Path, assets: list) -> None:
         conn.close()
 
 
+def _derive_category(asset_type: str | None, os: str | None) -> str:
+    """Best-effort device class when no explicit category was stored (legacy rows, or
+    network-only hosts the WinRM/AD classifier never reached). Mirrors the PowerShell
+    classification so the column is populated without forcing a re-scan."""
+    at = (asset_type or "").strip()
+    osl = (os or "").lower()
+    if at in ("DomainController", "Domain Controller"):
+        return "Domain Controller"
+    if at in ("Desktop", "Laptop", "Server", "Workstation", "Linux", "NetworkDevice"):
+        return "Server" if at == "Server" else at
+    if "server" in osl:
+        return "Server"
+    if at == "MemberServer":
+        return "Server"
+    if at in ("Windows",) and osl and "server" not in osl:
+        return "Workstation"
+    return "Unknown"
+
+
 def _row_to_asset(row) -> dict:
     get = row.__getitem__ if isinstance(row, (dict,)) else (lambda k: row[k])
+    try:
+        stored_category = get("category")
+    except (KeyError, IndexError):
+        stored_category = None
     d = {
         "Name": get("name"), "IP": get("ip"), "AssetType": get("asset_type"),
         "OS": get("os"), "OpenPorts": get("open_ports"), "Source": get("source"),
         "LastSeen": get("last_seen"), "DedupKey": get("dedup_key"),
+        "Category": (stored_category or "").strip() or _derive_category(get("asset_type"), get("os")),
     }
     if get("collection_note"):
         d["CollectionNote"] = get("collection_note")

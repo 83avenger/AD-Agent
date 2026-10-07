@@ -1430,11 +1430,13 @@ def assets_list():
     NOC-display truncated-to-40 version) - searchable, with online/last-seen status."""
     assets, last_scan = _load_discovery_inventory()
     by_type: dict = {}
+    by_category: dict = {}
     by_source: dict = {}
     online_count = 0
     stale_count = 0
     for a in assets:
         by_type[a.get("AssetType", "Unknown")] = by_type.get(a.get("AssetType", "Unknown"), 0) + 1
+        by_category[a.get("Category", "Unknown")] = by_category.get(a.get("Category", "Unknown"), 0) + 1
         by_source[a.get("Source", "Unknown")] = by_source.get(a.get("Source", "Unknown"), 0) + 1
         if _is_online(a.get("LastSeen")):
             online_count += 1
@@ -1449,6 +1451,7 @@ def assets_list():
         stale_count=stale_count,
         stale_days=STALE_THRESHOLD_DAYS,
         by_type=sorted(by_type.items(), key=lambda kv: -kv[1]),
+        by_category=sorted(by_category.items(), key=lambda kv: -kv[1]),
         by_source=sorted(by_source.items(), key=lambda kv: -kv[1]),
         last_scan=last_scan,
         is_online=_is_online,

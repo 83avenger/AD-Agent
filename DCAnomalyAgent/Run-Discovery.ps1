@@ -218,6 +218,18 @@ if (-not $SkipCategorize) {
             Write-DiscoveryLog "SKIP categorize for $($asset.Name): AssetType '$($asset.AssetType)' is not a Windows type" -Level SKIP
             continue
         }
+        # Category (device class) is kept separate from AssetType (coarse kind) so it is not
+        # lost when a later network-only scan re-reports this host as 'Windows'. Seed it from
+        # the coarse type / AD role so a WinRM-less host still gets a sensible class.
+        if (-not $asset.PSObject.Properties['Category']) {
+            $seed = switch ($asset.AssetType) {
+                'DomainController' { 'Domain Controller' }
+                'MemberServer'     { 'Server' }
+                'Workstation'      { 'Workstation' }
+                default            { 'Unknown' }
+            }
+            $asset | Add-Member -NotePropertyName Category -NotePropertyValue $seed -Force
+        }
         $hasOpenPorts = $null -ne $asset.PSObject.Properties['OpenPorts']
         if ($hasOpenPorts -and $asset.OpenPorts -notmatch 'WinRM') {
             $note = "Not categorized: WinRM (5985/5986) was not seen open during the network scan (ports seen: $($asset.OpenPorts)). Category probe and software collection both need WinRM."
@@ -227,9 +239,12 @@ if (-not $SkipCategorize) {
         }
         Write-DiscoveryLog "Probing device category for $($asset.Name) over WinRM (this may take a few seconds)..."
         try {
-            $before = $asset.AssetType
-            $asset.AssetType = Get-DeviceCategory -ComputerName $asset.Name -AssetType $asset.AssetType
-            Write-DiscoveryLog "Categorized $($asset.Name): $before -> $($asset.AssetType)"
+            # Refine the category via the chassis probe (Workstation -> Desktop/Laptop,
+            # confirm Server). AssetType stays the coarse kind.
+            $before = $asset.Category
+            $refined = Get-DeviceCategory -ComputerName $asset.Name -AssetType $asset.AssetType
+            $asset.Category = $refined
+            Write-DiscoveryLog "Categorized $($asset.Name): $before -> $($asset.Category)"
         } catch {
             $note = "Category probe failed over WinRM: $_. Common causes: gMSA lacks Remote Management Users on this host, WinRM is open but not configured for this identity, or the host is genuinely unreachable."
             Write-DiscoveryLog "ERROR categorize $($asset.Name): $_" -Level ERROR
@@ -245,7 +260,7 @@ if (-not $SkipCategorize) {
 $softwareInventory  = @()
 $vulnerableSoftware = @()
 if (-not $SkipSoftwareInventory) {
-    $swTargets = @($newInventory | Where-Object { $_.AssetType -in @('Domain Controller', 'Server', 'Desktop', 'Laptop', 'Workstation') })
+    $swTargets = @($newInventory | Where-Object { $_.AssetType -in @('DomainController', 'MemberServer', 'Workstation', 'Windows') })
     Write-DiscoveryLog "Software inventory: $($swTargets.Count) Windows host(s) categorized and eligible for collection."
     foreach ($asset in $swTargets) {
         $hasOpenPorts = $null -ne $asset.PSObject.Properties['OpenPorts']
@@ -257,7 +272,8 @@ if (-not $SkipSoftwareInventory) {
             continue
         }
         try {
-            $sw = @(Get-InstalledSoftware -ComputerName $asset.Name -Category $asset.AssetType)
+            $swCategory = if ($asset.PSObject.Properties['Category'] -and $asset.Category) { $asset.Category } else { $asset.AssetType }
+            $sw = @(Get-InstalledSoftware -ComputerName $asset.Name -Category $swCategory)
             $asset | Add-Member -NotePropertyName Software -NotePropertyValue $sw -Force
             $softwareInventory += $sw
             Write-DiscoveryLog "Software inventory: $($sw.Count) product(s) collected from $($asset.Name)."
