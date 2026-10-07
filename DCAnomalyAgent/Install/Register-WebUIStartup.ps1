@@ -87,6 +87,21 @@ Write-Host "  Runs as:  $GmsaAccount"
 Write-Host "  Trigger:  At system startup, whether anyone is logged on or not"
 Write-Host "  Command:  $PythonPath start.py --prod --host $BindHost --port $Port"
 Write-Host "  Working:  $webAppDir"
+
+# Open the inbound port now (this deploy runs elevated) so the UI is reachable from other
+# machines rather than silently depending on a hand-requested firewall rule that a reboot
+# or GPO refresh may have removed. Idempotent; reports the GPO caveat itself.
+$fwScript = Join-Path $PSScriptRoot 'Set-WebUIFirewall.ps1'
+if (Test-Path $fwScript) {
+    try {
+        & $fwScript -Port $Port
+    } catch {
+        Write-Warning "Could not ensure the firewall rule for TCP $Port automatically: $_"
+        Write-Warning "Open it manually (elevated): .\Set-WebUIFirewall.ps1 -Port $Port"
+    }
+} else {
+    Write-Warning "Set-WebUIFirewall.ps1 not found next to this script - ensure TCP $Port is allowed inbound so the UI is reachable."
+}
 Write-Host "`nIf a web UI is currently running interactively in an RDP session, stop it (Ctrl+C) now -"
 Write-Host "otherwise both copies will try to bind port $Port and the new one will fail to start."
 Write-Host "`nStart it immediately without waiting for a reboot:"

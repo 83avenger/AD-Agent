@@ -54,6 +54,11 @@
 param(
     [string]$Url = 'http://localhost:5000/healthz',
     [string]$TaskName = 'AD-Agent-WebUI',
+    [int]$Port = 5000,
+    # When set (e.g. 'http://jump-server.example.local:5000/healthz'), the watchdog also
+    # probes the UI off-loopback, so "reachable from other machines" is tested end-to-end
+    # rather than inferred from a localhost check that a missing firewall rule doesn't affect.
+    [string]$ExternalProbeUrl,
     [int]$TimeoutSec = 10,
     [int]$FailureThreshold = 2,
     [string]$LogPath,
@@ -94,8 +99,9 @@ if ($Register) {
     $watchdogScript = $MyInvocation.MyCommand.Path
     $psExe = if (Get-Command pwsh -ErrorAction SilentlyContinue) { (Get-Command pwsh).Source } else { (Get-Command powershell).Source }
 
-    $action  = New-ScheduledTaskAction -Execute $psExe `
-        -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$watchdogScript`" -Url `"$Url`" -TaskName `"$TaskName`""
+    $argLine = "-NoProfile -ExecutionPolicy Bypass -File `"$watchdogScript`" -Url `"$Url`" -TaskName `"$TaskName`" -Port $Port"
+    if ($ExternalProbeUrl) { $argLine += " -ExternalProbeUrl `"$ExternalProbeUrl`"" }
+    $action  = New-ScheduledTaskAction -Execute $psExe -Argument $argLine
     # -RepetitionDuration ([TimeSpan]::MaxValue) looks like the obvious way to say "repeat
     # forever," but MaxValue (10675199.02:48:05.4775807) doesn't fit the task XML schema's
     # duration format and gets mangled into an invalid value at registration time (the
@@ -182,3 +188,43 @@ if ($healthy) {
 
 @{ ConsecutiveFailures = $consecutiveFailures; LastCheck = (Get-Date -Format 'o') } |
     ConvertTo-Json | Set-Content -Path $stateFile
+
+# ---------------------------------------------------------------------------
+# Reachability blind spot: a missing inbound firewall rule leaves the app healthy on
+# localhost (so the check above passes and a restart would not help) while every remote
+# browser times out. Detect that explicitly so it is visible in the log and to alerting,
+# and self-heal it when we are allowed to - but never let it trigger an app restart.
+# ---------------------------------------------------------------------------
+if ($healthy) {
+    $fwScript = Join-Path $PSScriptRoot 'Set-WebUIFirewall.ps1'
+    if (Test-Path $fwScript) {
+        & $fwScript -Port $Port -CheckOnly | Out-Null
+        $ruleMissing = ($LASTEXITCODE -eq 2)
+        if ($ruleMissing) {
+            Write-WatchdogLog "App is healthy on localhost but TCP $Port has NO inbound allow rule - external clients cannot reach the web UI." -Level 'ERROR'
+            $isElevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+            if ($isElevated) {
+                try {
+                    & $fwScript -Port $Port
+                    Write-WatchdogLog "Re-asserted inbound firewall rule for TCP $Port."
+                } catch {
+                    Write-WatchdogLog "Could not re-assert firewall rule for TCP ${Port}: $_" -Level 'ERROR'
+                }
+            } else {
+                Write-WatchdogLog "Watchdog is not elevated - cannot create the rule. Run Set-WebUIFirewall.ps1 elevated, or open TCP $Port in GPO (firewall-request-ports.csv)." -Level 'WARN'
+            }
+        }
+    }
+
+    # Optional true off-loopback probe, if configured.
+    if ($ExternalProbeUrl) {
+        try {
+            $ext = Invoke-WebRequest -Uri $ExternalProbeUrl -TimeoutSec $TimeoutSec -UseBasicParsing
+            if ($ext.StatusCode -ne 200) {
+                Write-WatchdogLog "External probe to $ExternalProbeUrl returned HTTP $($ext.StatusCode)." -Level 'WARN'
+            }
+        } catch {
+            Write-WatchdogLog "External probe to $ExternalProbeUrl FAILED ($($_.Exception.Message)) - the UI is up on localhost but unreachable off-box (firewall/binding/network)." -Level 'ERROR'
+        }
+    }
+}
