@@ -2,6 +2,11 @@ flask==3.1.0
 reportlab==4.2.5
 Werkzeug==3.1.3
 
+# License signature verification (WebApp/licensing.py). Only needed when license
+# enforcement is enabled (ADAGENT_LICENSE_ENFORCE=1); the import is guarded so the app
+# still runs without it when enforcement is off.
+cryptography==43.0.1
+
 # Optional - only needed if ASSETS_DATABASE_URL is set to use PostgreSQL instead of the
 # default SQLite asset store. See WebApp/assets_db.py.
 # psycopg2-binary==2.9.10

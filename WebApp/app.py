@@ -39,6 +39,8 @@ from report_generator import (
 )
 import assets_db
 import soar
+import secrets_store
+import licensing
 
 APP_ROOT      = Path(__file__).parent
 PS_SCRIPT     = APP_ROOT.parent / "DCAnomalyAgent" / "Run-AnomalyScan.ps1"
@@ -97,6 +99,35 @@ def _audit(action: str, detail: str = "") -> None:
             fh.write(line + "\n")
     except OSError:
         pass  # audit logging must never break the request it's logging
+
+
+# ── License gate ─────────────────────────────────────────────────────────────
+# Non-destructive: when enforcement is on and the license is invalid, new scan/discovery/
+# pentest submissions are refused, but existing data stays served. Off by default.
+def _license_block():
+    """Return a rendered 'unlicensed' page to short-circuit a mutating route, or None to
+    allow it. Also drives the banner via the context processor below."""
+    status = licensing.license_status()
+    if status["ok"]:
+        return None
+    return render_template(
+        "index.html",
+        error=(f"AD-Agent is not licensed to run new scans on this host: {status['reason']} "
+               "Existing results remain available. Contact the developer for a valid license."),
+    )
+
+
+@app.context_processor
+def _inject_license_banner():
+    try:
+        status = licensing.license_status()
+    except Exception:
+        return {}
+    # Only surface a banner when enforcement is active (valid or invalid); stay silent when
+    # unenforced so an ordinary deployment shows nothing new.
+    if status["state"] == "unenforced":
+        return {"license_banner": None}
+    return {"license_banner": status}
 
 
 # ── Background job queue ────────────────────────────────────────────────────
@@ -460,17 +491,16 @@ def _load_vendor_warranty_secrets() -> dict:
         "AgeAlertYears": 4,
     }
     try:
-        if INTEGRATION_SECRETS_PATH.exists():
-            with open(INTEGRATION_SECRETS_PATH, encoding="utf-8-sig") as fh:
-                data = json.load(fh)
-                saved = data.get("VendorWarranty", {})
-                default["Dell"].update(saved.get("Dell", {}))
-                default["Hp"].update(saved.get("Hp", {}))
-                default["Lenovo"].update(saved.get("Lenovo", {}))
-                if "Enabled" in saved:
-                    default["Enabled"] = saved["Enabled"]
-                if "AgeAlertYears" in saved:
-                    default["AgeAlertYears"] = saved["AgeAlertYears"]
+        if INTEGRATION_SECRETS_PATH.exists() or secrets_store._enc_path(INTEGRATION_SECRETS_PATH).exists():
+            data = secrets_store.read_secrets(INTEGRATION_SECRETS_PATH)
+            saved = data.get("VendorWarranty", {})
+            default["Dell"].update(saved.get("Dell", {}))
+            default["Hp"].update(saved.get("Hp", {}))
+            default["Lenovo"].update(saved.get("Lenovo", {}))
+            if "Enabled" in saved:
+                default["Enabled"] = saved["Enabled"]
+            if "AgeAlertYears" in saved:
+                default["AgeAlertYears"] = saved["AgeAlertYears"]
     except Exception:
         pass
     return default
@@ -481,12 +511,8 @@ def _save_vendor_warranty_secrets(update: dict) -> None:
     other top-level sections the file may gain later and any field left blank in the form
     (blank means "keep what's already saved", not "clear it")."""
     data = {}
-    if INTEGRATION_SECRETS_PATH.exists():
-        try:
-            with open(INTEGRATION_SECRETS_PATH, encoding="utf-8-sig") as fh:
-                data = json.load(fh)
-        except Exception:
-            data = {}
+    if INTEGRATION_SECRETS_PATH.exists() or secrets_store._enc_path(INTEGRATION_SECRETS_PATH).exists():
+        data = secrets_store.read_secrets(INTEGRATION_SECRETS_PATH)
     current = data.get("VendorWarranty", {})
     for section in ("Dell", "Hp", "Lenovo"):
         if section in update:
@@ -498,9 +524,7 @@ def _save_vendor_warranty_secrets(update: dict) -> None:
     if "AgeAlertYears" in update:
         current["AgeAlertYears"] = update["AgeAlertYears"]
     data["VendorWarranty"] = current
-    INTEGRATION_SECRETS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(INTEGRATION_SECRETS_PATH, "w", encoding="utf-8") as fh:
-        json.dump(data, fh, indent=2)
+    secrets_store.write_secrets(INTEGRATION_SECRETS_PATH, data)
 
 
 _last_synced_mtime: float | None = None
@@ -1893,6 +1917,9 @@ def pentest_run_intrusive():
     checks, and it refuses unless PENTEST_MODE=live - the deliberate, audited approval
     step that mirrors SOAR's destructive-action approval. Assessment-only runs go through
     the normal New Scan page instead."""
+    _blocked = _license_block()
+    if _blocked is not None:
+        return _blocked
     if PENTEST_MODE != "live":
         return render_template("index.html",
                                error="Intrusive pentest checks require PENTEST_MODE=live. "
@@ -2031,6 +2058,9 @@ def software_clear():
 def discovery_run():
     """Discovery-only run (+ software inventory by default): no anomaly, compliance,
     certificate, or zero-day scanning at all."""
+    _blocked = _license_block()
+    if _blocked is not None:
+        return _blocked
 
     def _split(field: str) -> list[str]:
         raw = request.form.get(field, "").strip()
@@ -2165,6 +2195,9 @@ def _expand_scan_targets(raw: str) -> tuple[list[str], str | None]:
 
 @app.route("/scan", methods=["POST"])
 def scan():
+    _blocked = _license_block()
+    if _blocked is not None:
+        return _blocked
     raw_dcs  = request.form.get("domain_controllers", "").strip()
     # Validate what was typed before expanding it, so the message names the entry as the
     # user wrote it rather than something derived from it.

@@ -336,6 +336,16 @@
 </nav>
 
 <div class="container">
+  {% if license_banner %}
+  <div style="padding:.6rem 1rem; text-align:center; font-size:.85rem; font-weight:600;
+    {% if license_banner.ok %}background:#064e3b; color:#d1fae5;{% else %}background:#7f1d1d; color:#fee2e2;{% endif %}">
+    {% if license_banner.ok %}
+      Licensed{% if license_banner.owner %} to {{ license_banner.owner }}{% endif %}{% if license_banner.expires %} · expires {{ license_banner.expires[:10] }}{% endif %}
+    {% else %}
+      ⚠ Unlicensed — {{ license_banner.reason }} New scans are blocked; existing data remains available.
+    {% endif %}
+  </div>
+  {% endif %}
   {% block content %}{% endblock %}
 </div>
 
