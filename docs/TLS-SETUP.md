@@ -8,12 +8,58 @@ AD-Agent runs two channels, and they can use different security levels:
 - **Device registration** (collector check-ins) — leave on **plain HTTP** (`http://<jump>:5000`)
   for the initial rollout; move it to HTTPS later with a one-line change.
 
-The Flask app itself only ever serves plain HTTP on `localhost:5000`; IIS provides the TLS. This
-is why a loopback self-test uses `http://localhost:5000` — that traffic never leaves the box.
+The Flask app itself only ever serves plain HTTP on `localhost:5000`; something in front
+provides the TLS. This is why a loopback self-test uses `http://localhost:5000` — that
+traffic never leaves the box.
 
-## Steps
+There are two ways to put TLS in front. Pick one:
 
-### 1. Get a CA certificate for the jump host
+- **Python TLS proxy (no IIS)** — recommended on a locked-down / air-gapped server where
+  IIS + ARR + URL Rewrite won't install cleanly. Nothing but the Python you already have.
+  TLS only (no Windows Auth). See **Option A** below.
+- **IIS reverse proxy** — adds TLS *and* Windows Authentication, but needs IIS + the ARR and
+  URL Rewrite MSIs staged offline. See **Option B** below.
+
+---
+
+## Option A — Python TLS proxy (no IIS)
+
+### A1. Get a CA certificate and export it as a PFX
+
+```powershell
+cd DCAnomalyAgent\Install
+.\Request-WebUICertificate.ps1        # enrols a web-server cert from your CA; prints the thumbprint
+# Export it (with its private key) to a PFX the proxy can load:
+Export-PfxCertificate -Cert Cert:\LocalMachine\My\<thumbprint> `
+    -FilePath C:\Apps\AD-Agent\webui.pfx -Password (Read-Host -AsSecureString)
+```
+
+(If you already have PEM `cert`/`key` files, you can use those instead and skip the PFX —
+the proxy and registrar both accept `-CertPem`/`-KeyPem`, which need no extra package.)
+
+### A2. Register the proxy as a service
+
+```powershell
+.\Register-TlsProxy.ps1 -GmsaAccount 'AMG\svc-discoverAgt$' `
+    -PythonPath 'C:\Apps\Python312\python.exe' -Pfx 'C:\Apps\AD-Agent\webui.pfx'
+Start-ScheduledTask -TaskName 'AD-Agent-TlsProxy'
+```
+
+It runs `WebApp\tls_proxy.py` under the gMSA at startup, listening on 443 and forwarding to
+the Flask app on 127.0.0.1:5000, and opens the inbound 443 rule. The `--pfx` path needs the
+`cryptography` package on the server (`pip install cryptography`); the `-CertPem/-KeyPem`
+path is pure stdlib and needs nothing.
+
+### A3. Browse and register devices
+
+- Analysts: `https://<jump>` (CA-trusted, no warning).
+- Devices: keep registering at `http://<jump>:5000` for now (see below).
+
+Then skip to **Firewall** and **Later** sections.
+
+---
+
+## Option B — IIS reverse proxy (adds Windows Auth)
 
 ```powershell
 cd DCAnomalyAgent\Install
