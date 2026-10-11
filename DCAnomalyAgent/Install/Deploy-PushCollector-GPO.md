@@ -16,6 +16,31 @@ already have approved rules. Don't deploy this to them.
 
 ---
 
+## Automated rollout (recommended)
+
+`New-PushCollectorGPO.ps1` does steps 1–3 below for you: it stages the scripts to SYSVOL,
+creates/links the GPO, and wires a Computer **Startup PowerShell script** that runs the tested
+`Install-PushCollector.ps1` on each endpoint at boot (which registers the two local tasks).
+
+```powershell
+# On the jump server: set the token first, or check-ins fail closed (see "Enable the endpoint").
+.\Set-CollectorToken.ps1 -RestartWebUI    # copy the token it prints
+
+# On a domain admin box with RSAT GroupPolicy installed:
+.\New-PushCollectorGPO.ps1 `
+    -ServerUrl 'https://jump-host.example.local' `
+    -Token '<the COLLECTOR_TOKEN value>' `
+    -TargetOU 'OU=Laptops,OU=Devices,DC=example,DC=local' `
+    -TightenAcl -WhatIf      # drop -WhatIf to apply
+```
+
+Refuses to link the Domain Controllers OU. It reuses `Install-PushCollector.ps1`, so the
+endpoint-side task logic is identical to the non-domain installer. Then verify on a test
+endpoint (`gpupdate /force` + reboot → the two tasks appear → device shows on the Endpoints
+page). The manual steps below remain available if you'd rather build the GPO by hand.
+
+---
+
 ## 1. Generate a token and enable the endpoint
 
 On the jump server, the helper does it in one step — generates the token, sets it at Machine
@@ -41,7 +66,11 @@ Stop-ScheduledTask -TaskName 'AD-Agent-WebUI'; Start-ScheduledTask -TaskName 'AD
 ```
 
 Until `COLLECTOR_TOKEN` is set, `/api/collector/checkin` refuses every request with HTTP 503 —
-the feature is off by default rather than silently accepting unauthenticated writes.
+the feature is off by default rather than silently accepting unauthenticated writes. If a
+check-in test returns `{"error":"collector endpoint disabled"}`, that is this state: the token
+is not set on the jump server. Set it with `Set-CollectorToken.ps1 -RestartWebUI` (above) and
+restart the web UI. Once set, a **wrong** token returns 401 (endpoint up, rejecting) — which is
+the success signal for the test below — and the correct token returns 200.
 
 Verify it's live (401 = endpoint is up and rejecting a bad token, which is what you want):
 
