@@ -54,6 +54,14 @@
     IIS proxy. Requires Register-WebUIStartup.ps1 to already be registered
     (uses the same -GmsaAccount/-PythonPath it was set up with).
 
+    OMIT THIS for the "both SSL and plain" posture: IIS serves the UI on 443
+    over HTTPS (with your CA cert) while the Flask app stays reachable on
+    TCP 5000 for plain collector check-ins. In that mode the UI is ALSO
+    reachable unauthenticated on 5000, so restrict inbound 5000 at the
+    network firewall to the endpoint VLANs (collector sources) only, and
+    expose 443 to analysts. Add this switch later, once collectors have moved
+    to the https:// URL, to close 5000 entirely. See docs/TLS-SETUP.md.
+
 .EXAMPLE
     .\Register-IISReverseProxy.ps1 -AllowedGroup 'AMG\AD-Agent-Analysts' -LockWebUIToLocalhost
 
@@ -182,4 +190,11 @@ Write-Host "`nDone. Site '$SiteName' is listening on https://$($env:COMPUTERNAME
 Write-Host "Point analysts at TCP/$Port on this proxy instead of TCP/$WebUIPort directly - firewall-request-ports.csv row 22 already covers this; once confirmed working, ask your network team to remove row 20 (direct TCP/$WebUIPort access)."
 if (-not $CertThumbprint) {
     Write-Host "`nReminder: replace the self-signed certificate with one from your internal CA before rolling this out beyond a test." -ForegroundColor Yellow
+    Write-Host "Request a CA cert for this host with: .\Request-WebUICertificate.ps1 (prints a thumbprint to pass as -CertThumbprint)."
+}
+if (-not $LockWebUIToLocalhost) {
+    Write-Host "`n'Both' mode: the UI is on HTTPS/$Port and the app is STILL reachable on plain TCP $WebUIPort." -ForegroundColor Yellow
+    Write-Host "That keeps device registration working over http://<jump>:$WebUIPort for now, but the UI is also"
+    Write-Host "reachable unauthenticated on $WebUIPort. Restrict inbound $WebUIPort at the firewall to endpoint VLANs,"
+    Write-Host "and expose $Port to analysts. Add -LockWebUIToLocalhost later to close $WebUIPort. See docs/TLS-SETUP.md."
 }

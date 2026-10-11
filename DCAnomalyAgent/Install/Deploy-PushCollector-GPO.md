@@ -169,6 +169,13 @@ One outbound rule. Hand this to the network team in place of the inbound-per-VLA
 
 This row is also in `firewall-request-ports.csv` (row 23).
 
+**Plain HTTP for the initial rollout is fine.** The collector accepts either scheme, so you can
+register devices over `http://<jump>:5000` now and secure later — point `-ServerUrl` at the
+plain URL. The token is write-only and low-value, but it *does* travel in cleartext over plain
+HTTP, so while you're on plain: restrict inbound TCP 5000 to the endpoint VLANs at the network
+firewall. To cut over to HTTPS later, stand up the IIS proxy (`docs/TLS-SETUP.md`) and re-run
+`New-PushCollectorGPO.ps1` with the `https://<jump>` URL — that's the only change endpoints need.
+
 ---
 
 ## 5. Verify
