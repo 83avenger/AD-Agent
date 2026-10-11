@@ -57,8 +57,13 @@ $isElevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsI
 if (-not $isElevated) { throw "Run elevated - this registers a Scheduled Task and a firewall rule." }
 if (-not (Test-Path $PythonPath)) { throw "PythonPath '$PythonPath' does not exist." }
 
-$proxyScript = (Resolve-Path "$PSScriptRoot\..\..\WebApp\tls_proxy.py").Path
-if (-not (Test-Path $proxyScript)) { throw "tls_proxy.py not found at $proxyScript." }
+# Join-Path (not Resolve-Path) so a missing file gives a clear message instead of the
+# cryptic Resolve-Path "cannot find path" error - the usual cause is the server not having
+# pulled the latest code yet.
+$proxyScript = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'WebApp\tls_proxy.py'
+if (-not (Test-Path $proxyScript)) {
+    throw "tls_proxy.py not found at $proxyScript. This file ships in WebApp\ - update the server to the latest code first (git pull + Update-Deployment.ps1, or copy WebApp\tls_proxy.py into place), then re-run."
+}
 $webAppDir = Split-Path -Parent $proxyScript
 
 # Build the argument list for the selected cert source.
