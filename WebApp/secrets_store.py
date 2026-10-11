@@ -1,18 +1,11 @@
 """Encrypted-at-rest storage for AD-Agent's integration secrets.
 
-The vendor/API keys the Integrations page saves used to live in plaintext
-(Config/integration-secrets.json). This module keeps the same JSON shape but stores it
-encrypted with Windows DPAPI at **machine scope**, so:
-
-  * no plaintext API keys sit on disk, and
-  * any account on that one machine (the web UI's gMSA and an admin alike) can read it,
-    while the ciphertext is useless if the file is copied off the box.
-
-DPAPI is called through stdlib ctypes - no pywin32 dependency. On a non-Windows host
-(developer laptop / CI) there is no DPAPI, so the store transparently falls back to
-plaintext and says so via `is_encrypted()`; production is Windows, where encryption is
-always used. Reads accept a legacy plaintext file and the next write migrates it to the
-encrypted form, deleting the plaintext.
+The vendor/API keys the Integrations page saves can be stored encrypted with Windows DPAPI
+at **machine scope**, so no plaintext API keys sit on disk and the ciphertext is useless if
+copied off the box. Encryption is **opt-in** (ADAGENT_ENCRYPT_SECRETS=1, which the secure
+installer sets): the plain deployment keeps writing plaintext `integration-secrets.json`
+exactly as before, so the two deployment methods stay cleanly separate. Reads always accept
+either form, so switching is transparent.
 """
 
 from __future__ import annotations
@@ -31,8 +24,10 @@ _CRYPTPROTECT_LOCAL_MACHINE = 0x04
 
 
 def is_encrypted() -> bool:
-    """True when real at-rest encryption is available (i.e. on Windows)."""
-    return _IS_WINDOWS
+    """True when at-rest encryption is both available (Windows) and enabled. Encryption is
+    opt-in via ADAGENT_ENCRYPT_SECRETS=1 (the secure installer sets it), so the plain
+    deployment keeps writing plaintext exactly as before."""
+    return _IS_WINDOWS and os.environ.get("ADAGENT_ENCRYPT_SECRETS", "0") == "1"
 
 
 class _DATA_BLOB(ctypes.Structure):
@@ -95,12 +90,13 @@ def read_secrets(path: Path) -> dict:
 
 
 def write_secrets(path: Path, data: dict) -> None:
-    """Persist the secrets dict encrypted (Windows) or plaintext (dev). After a successful
-    encrypted write, remove any legacy plaintext file so secrets don't linger in the clear."""
+    """Persist the secrets dict. Encrypted when enabled (is_encrypted()), otherwise plaintext
+    exactly as the old deployment wrote it. Either way, remove the other representation so the
+    file just written is authoritative and no stale copy is read back."""
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(data, indent=2).encode("utf-8")
-    if _IS_WINDOWS:
-        enc = _enc_path(path)
+    enc = _enc_path(path)
+    if is_encrypted():
         tmp = enc.with_suffix(enc.suffix + ".tmp")
         tmp.write_bytes(_dpapi_protect(payload))
         os.replace(tmp, enc)
@@ -111,6 +107,12 @@ def write_secrets(path: Path, data: dict) -> None:
         except OSError:
             pass
     else:
-        # Developer/CI fallback - no DPAPI available. Plaintext, same path as before.
+        # Plain deployment (default) - plaintext, same path/format as before.
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(payload.decode("utf-8"))
+        # Drop a stale encrypted copy so the plaintext is what gets read next time.
+        try:
+            if enc.exists():
+                enc.unlink()
+        except OSError:
+            pass

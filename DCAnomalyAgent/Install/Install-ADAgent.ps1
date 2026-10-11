@@ -139,6 +139,9 @@ try {
     if ($WheelsDir -and $PythonPath -and (Test-Path $WheelsDir)) {
         Write-Host "Installing Python dependencies from $WheelsDir ..."
         & $PythonPath -m pip install --no-index --find-links $WheelsDir -r (Join-Path $InstallDir 'WebApp\requirements.txt')
+        # cryptography is optional in requirements (plain deployment doesn't need it); the
+        # secure build enforces licensing, so install it here.
+        & $PythonPath -m pip install --no-index --find-links $WheelsDir cryptography
     }
 
     # 6. Register tasks + firewall via the existing scripts.
@@ -155,11 +158,18 @@ try {
         Set-ExecutionPolicy -ExecutionPolicy AllSigned -Scope LocalMachine -Force
     }
 
+    # Turn on the secure-build env flags at machine scope so the web UI enforces the license
+    # and encrypts secrets at rest. The plain deployment leaves these unset and behaves as
+    # before (no enforcement, plaintext secrets).
+    [Environment]::SetEnvironmentVariable('ADAGENT_LICENSE_ENFORCE', '1', 'Machine')
+    [Environment]::SetEnvironmentVariable('ADAGENT_ENCRYPT_SECRETS', '1', 'Machine')
+
     Write-Host ""
     Write-Host "AD-Agent $($info.version) installed to $InstallDir." -ForegroundColor Green
     Write-Host "License: owner $($lic.Owner); enforcement is ON for this deployment."
-    Write-Host "Set ADAGENT_LICENSE_ENFORCE=1 (Machine) so the web UI enforces it too:"
-    Write-Host "  [Environment]::SetEnvironmentVariable('ADAGENT_LICENSE_ENFORCE','1','Machine')"
+    Write-Host "Secrets at rest: encryption ON (ADAGENT_ENCRYPT_SECRETS=1)."
+    Write-Host "Restart the web UI so it picks up the new environment:"
+    Write-Host "  Stop-ScheduledTask -TaskName 'AD-Agent-WebUI'; Start-ScheduledTask -TaskName 'AD-Agent-WebUI'"
 } finally {
     if (Test-Path $work) { Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue }
 }

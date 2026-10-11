@@ -10,6 +10,26 @@ nothing changes. When on, an unlicensed/expired/altered/wrong-host copy refuses 
 scans and shows a banner, but keeps serving existing data and never deletes anything — a
 security tool must fail safe.
 
+## Both deployment methods are available
+
+The secure build does not replace the old one — they share a single codebase and differ only
+in which environment flags the install sets, so you can keep running the plain method for as
+long as you like and convert later.
+
+| | Old / plain method | New / secure method |
+|---|---|---|
+| Get it | clone or zip the repo | `New-SecureRelease.ps1` → `AD-Agent-<ver>.secure` |
+| Install | copy files + `Update-Deployment.ps1` + the `Register-*.ps1` | one `Install-ADAgent.ps1` |
+| Signing / catalog | none | Authenticode + signed catalog, AllSigned |
+| License | none (runs unlocked) | signed, node-locked `license.key` |
+| Secrets at rest | plaintext `integration-secrets.json` | DPAPI `integration-secrets.json.enc` |
+| Flags set | none | `ADAGENT_LICENSE_ENFORCE=1`, `ADAGENT_ENCRYPT_SECRETS=1` |
+
+Both read the same data, so a server can be moved from plain to secure (or back) without data
+loss. The plain method needs no extra Python packages; `cryptography` is only required when
+license enforcement is on, and the secure installer installs it.
+
+
 > On a CrowdStrike estate we deliberately **do not** obfuscate source or ship packed exes
 > (they trip EDR and break AllSigned). Protection = signing + integrity catalog + DPAPI +
 > license, which are auditable and EDR-friendly.
