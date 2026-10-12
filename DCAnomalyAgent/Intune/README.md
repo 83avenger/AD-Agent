@@ -1,5 +1,7 @@
 # Intune deployment (WinRM + push collector)
 
+> **Step-by-step (click by click):** [`docs/ENDPOINT-ROLLOUT-STEP-BY-STEP.md`](../../docs/ENDPOINT-ROLLOUT-STEP-BY-STEP.md) Part 4.
+
 Intune is the most reliable way to reach laptops: the device pulls its scripts **outbound**
 from Intune over HTTPS, so its host firewall, blocked RPC, VLAN rules and being at home
 don't matter. Devices must be enrolled in Intune (hybrid-joined / co-managed is fine).

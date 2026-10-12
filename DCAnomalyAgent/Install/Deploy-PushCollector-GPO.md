@@ -1,5 +1,7 @@
 # Deploying the Push Collector via GPO
 
+> **Step-by-step for GPO, Intune or from your laptop:** [`docs/ENDPOINT-ROLLOUT-STEP-BY-STEP.md`](../../docs/ENDPOINT-ROLLOUT-STEP-BY-STEP.md).
+
 The push collector inverts discovery for endpoints: instead of the jump server reaching *in*
 over WinRM, each endpoint collects its own inventory and POSTs it *out* to the jump server.
 

@@ -1,5 +1,7 @@
 # WinRM on endpoints — why the GPO "applied" but 5985 is still closed, and the fixes
 
+> **Step-by-step:** follow [`ENDPOINT-ROLLOUT-STEP-BY-STEP.md`](ENDPOINT-ROLLOUT-STEP-BY-STEP.md). This page is the background and reference.
+
 The jump server scans endpoints over WinRM (TCP 5985). Laptops and desktops block inbound
 WinRM by default, so it has to be turned on. There are three ways to do that, plus one that
 avoids WinRM entirely:
