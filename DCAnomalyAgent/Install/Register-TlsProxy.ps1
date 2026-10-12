@@ -102,7 +102,9 @@ Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger `
 # Open the HTTPS port (reuse the firewall helper if present).
 $fw = Join-Path $PSScriptRoot 'Set-WebUIFirewall.ps1'
 if (Test-Path $fw) {
-    try { & $fw -Port $ListenPort } catch { Write-Warning "Could not open TCP $ListenPort automatically: $_" }
+    # Explicit name: the helper's default display name says "TCP 5000", which would mislabel
+    # the HTTPS rule in wf.msc.
+    try { & $fw -Port $ListenPort -DisplayName "AD-Agent TLS proxy (TCP $ListenPort)" } catch { Write-Warning "Could not open TCP $ListenPort automatically: $_" }
 } else {
     Write-Warning "Set-WebUIFirewall.ps1 not found - open inbound TCP $ListenPort manually."
 }
