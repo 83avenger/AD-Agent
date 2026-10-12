@@ -14,6 +14,11 @@ the inbound-per-VLAN request.
 Servers and DCs stay on agentless WinRM — they're static, always-on, already reachable, and
 already have approved rules. Don't deploy this to them.
 
+Other ways to deploy: **Intune** (`DCAnomalyAgent/Intune/README.md`), which reaches laptops
+even off-network, or **from an admin workstation** with `Invoke-RemoteEndpointSetup.ps1`,
+which only reaches hosts that still allow WinRM or RPC. If you need WinRM on endpoints as
+well, see `docs/WINRM-ENDPOINTS.md`.
+
 ---
 
 ## Automated rollout (recommended)
