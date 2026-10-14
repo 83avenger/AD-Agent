@@ -455,7 +455,11 @@ Results are written to `State\software-inventory-report.md` and merged into the 
 
 ## Live rotating dashboard
 
-A full-screen operations dashboard for a NOC/wall display, at **`/dashboard`** in the web UI. It auto-rotates through **6 screens** every 13 seconds:
+A full-screen operations dashboard for a NOC/wall display, at **`/dashboard`** in the web UI. It auto-rotates every 13 seconds through up to **6 screens**.
+
+> **Phase 1 (default): discovery focus.** Only **Executive Overview**, **Network Discovery** and **Software Inventory** are shown, and the Executive Overview shows discovery tiles (assets, online, laptops/desktops/servers/DCs, not seen in 14+ days) instead of the posture banner and the anomaly/compliance/certificate tiles. The hidden screens' scans, API and metrics are unchanged. To bring them back, set `DASHBOARD_SECTIONS=all` at Machine scope and restart the web UI (see `DEPLOYMENT-MASTER.md`).
+
+All six screens (with `DASHBOARD_SECTIONS=all`):
 
 1. **Executive Overview** — posture banner + KPI tiles (anomalies, compliance score, zero-day alerts, expiring certs, inventoried hosts) and an all-sources severity bar
 2. **Network Discovery** — asset counts by type and by discovery source (on-prem vs. Cloudflare WARP), an online/last-seen status column, and a table of discovered hosts — click any row for its full installed-software list

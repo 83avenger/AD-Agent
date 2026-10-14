@@ -17,7 +17,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from flask import (
@@ -604,6 +604,28 @@ CERT_THRESHOLD_DAYS = 90   # mirrors Certificates.ThresholdDays in settings.psd1
 # dryrun = assessment findings show, intrusive stays gated; live = intrusive checks may
 # run but only via the deliberate approval action, never from the New Scan checkbox.
 PENTEST_MODE = os.environ.get("PENTEST_MODE", "off").strip().lower()
+
+# Which screens the rotating /dashboard shows. Phase 1 concentrates on discovery, so
+# compliance, threats/anomalies and certificate expiry are hidden from the wall and the
+# executive overview - hidden only: the scans, API and metrics behind them are untouched.
+# DASHBOARD_SECTIONS=all (or an explicit list) brings them back.
+DASHBOARD_ALL_SECTIONS = ["overview", "discovery", "compliance", "threats", "certificates", "software"]
+DASHBOARD_PHASE1_SECTIONS = ["overview", "discovery", "software"]
+
+
+def _dashboard_sections(raw: str | None) -> list:
+    raw = (raw or "").strip().lower()
+    if not raw:
+        return list(DASHBOARD_PHASE1_SECTIONS)
+    if raw == "all":
+        return list(DASHBOARD_ALL_SECTIONS)
+    wanted = {p.strip() for p in raw.split(",") if p.strip()}
+    # Overview and discovery always stay - a typo shouldn't leave the wall empty.
+    wanted |= {"overview", "discovery"}
+    return [s for s in DASHBOARD_ALL_SECTIONS if s in wanted]
+
+
+DASHBOARD_SECTIONS = _dashboard_sections(os.environ.get("DASHBOARD_SECTIONS"))
 PENTEST_SEV_RANK = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Unknown": 4}
 STALE_THRESHOLD_DAYS = 14  # e.g. a laptop out on leave for 2-3 weeks
 PRESENCE_WINDOW_DAYS = 30  # window for the Endpoints page's office/remote day counts
@@ -737,6 +759,23 @@ def _dashboard_payload() -> dict:
     for a in assets:
         s = a.get("Source", "Unknown")
         sources[s] = sources.get(s, 0) + 1
+    # Device class counts for the discovery-focused executive overview.
+    by_category = {"Laptop": 0, "Desktop": 0, "Server": 0, "Domain Controller": 0, "Other": 0}
+    for a in assets:
+        c = (a.get("Category") or "").strip()
+        by_category[c if c in by_category else "Other"] += 1
+    now_utc = datetime.utcnow()
+
+    def _seen_within(last_seen, hours):
+        if not last_seen:
+            return False
+        try:
+            seen = datetime.fromisoformat(str(last_seen).replace("Z", "+00:00"))
+            if seen.tzinfo:
+                seen = seen.astimezone(timezone.utc).replace(tzinfo=None)
+            return (now_utc - seen).total_seconds() <= hours * 3600
+        except Exception:
+            return False
 
     return {
         "demo": demo,
@@ -783,6 +822,10 @@ def _dashboard_payload() -> dict:
             "online": len([a for a in assets if _is_online(a.get("LastSeen"))]),
             "by_type": disc_by_type,
             "by_source": sorted(sources.items(), key=lambda kv: -kv[1]),
+            "by_category": by_category,
+            "seen_24h": len([a for a in assets if _seen_within(a.get("LastSeen"), 24)]),
+            "stale": len([a for a in assets if _is_stale(a.get("LastSeen"))]),
+            "stale_days": STALE_THRESHOLD_DAYS,
             "last_scan": disc_last_scan,
             # Software omitted here (fetched on demand via /api/discovery/asset/<name>)
             # to keep the polled dashboard payload small.
@@ -817,6 +860,7 @@ def _healthz_checks() -> dict:
         checks["assets_db"] = {"status": "fail", "detail": str(exc)}
 
     checks["pentest_mode"] = {"status": "ok", "detail": PENTEST_MODE}
+    checks["dashboard_sections"] = {"status": "ok", "detail": ",".join(DASHBOARD_SECTIONS)}
 
     checks["discovery_sync"] = (
         {"status": "ok"} if not _last_sync_error else {"status": "warn", "detail": _last_sync_error}
@@ -906,7 +950,7 @@ def index():
 @app.route("/dashboard")
 def dashboard():
     """Full-screen rotating operations dashboard (for a NOC/wall display)."""
-    return render_template("dashboard.html")
+    return render_template("dashboard.html", sections=DASHBOARD_SECTIONS)
 
 
 @app.route("/api/dashboard")

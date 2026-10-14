@@ -154,12 +154,14 @@
 </header>
 
 <div class="stage" id="stage">
-  <section class="screen" data-name="Executive Overview"></section>
-  <section class="screen" data-name="Network Discovery"></section>
-  <section class="screen" data-name="Compliance Posture"></section>
-  <section class="screen" data-name="Threats &amp; Anomalies"></section>
-  <section class="screen" data-name="Certificate Expiry"></section>
-  <section class="screen" data-name="Software Inventory"></section>
+  {# Screens come from DASHBOARD_SECTIONS (app.py). Phase 1 shows overview, discovery and
+     software; compliance, threats and certificates are hidden until switched back on. #}
+  {% set screen_names = {'overview': 'Executive Overview', 'discovery': 'Network Discovery',
+       'compliance': 'Compliance Posture', 'threats': 'Threats & Anomalies',
+       'certificates': 'Certificate Expiry', 'software': 'Software Inventory'} %}
+  {% for key in sections %}
+  <section class="screen" data-key="{{ key }}" data-name="{{ screen_names[key] }}"></section>
+  {% endfor %}
 </div>
 
 <div class="modal-backdrop hidden" id="deviceModal" onclick="if(event.target===this) closeDeviceModal()">
@@ -184,6 +186,9 @@
 
 <script>
 const SCREENS = document.querySelectorAll('.screen');
+const SECTIONS = {{ sections|tojson }};
+const SHOW = {compliance: SECTIONS.includes('compliance'), threats: SECTIONS.includes('threats'),
+              certificates: SECTIONS.includes('certificates')};
 const DOTS = document.getElementById('dots');
 const N = SCREENS.length;
 const ROTATE_MS = 13000;
@@ -227,20 +232,51 @@ function hbars(pairs, colorFn){
 /* ── Screen renderers ─────────────────────────────────────────────── */
 function renderOverview(d){
   const k=d.kpi, f=d.freshness||{};
+  const disc = d.discovery || {total:0, online:0, by_category:{}, seen_24h:0, stale:0, stale_days:14, last_scan:null};
+  const cat = disc.by_category || {};
+  const security = SHOW.compliance || SHOW.threats || SHOW.certificates;
   const score = k.compliance_score==null?'—':k.compliance_score+'%';
   const postureTxt = {critical:'Critical exposure — immediate action required',
     warn:'Attention needed — findings above baseline', good:'Healthy — no critical findings'}[d.posture];
+
+  // Freshness line: only sources whose screens are switched on.
+  const fresh = [`Discovery ${timeAgo(disc.last_scan)}`];
+  if(SHOW.threats) fresh.push(`Anomalies ${timeAgo(f.Anomalies)}`, `Zero-day ${timeAgo(f.ZeroDay)}`);
+  if(SHOW.compliance) fresh.push(`Compliance ${timeAgo(f.Compliance)}`);
+  if(SHOW.certificates) fresh.push(`Certs ${timeAgo(f.Certificates)}`);
+  fresh.push(`Software ${timeAgo(f.SoftwareInventory)}`);
+
+  const tiles = [
+    `<div class="panel kpi c-accent"><div class="num">${disc.total}</div><div class="lbl">Discovered Assets</div></div>`,
+    `<div class="panel kpi c-good"><div class="num">${disc.online}</div><div class="lbl">Online Now · ${disc.seen_24h} seen in 24h</div></div>`,
+    `<div class="panel kpi c-accent"><div class="num">${cat['Laptop']||0}</div><div class="lbl">Laptops</div></div>`,
+    `<div class="panel kpi c-accent"><div class="num">${cat['Desktop']||0}</div><div class="lbl">Desktops</div></div>`,
+    `<div class="panel kpi c-accent"><div class="num">${(cat['Server']||0)}</div><div class="lbl">Servers · ${cat['Domain Controller']||0} Domain Controller(s)</div></div>`,
+    `<div class="panel kpi c-${disc.stale?'medium':'good'}"><div class="num">${disc.stale}</div><div class="lbl">Not Seen in ${disc.stale_days}+ Days</div></div>`,
+  ];
+  if(SHOW.threats) tiles.push(
+    `<div class="panel kpi c-${k.anomalies?'high':'good'}"><div class="num">${k.anomalies}</div><div class="lbl">Security Anomalies</div></div>`,
+    `<div class="panel kpi c-${k.zerodays?'critical':'good'}"><div class="num">${k.zerodays}</div><div class="lbl">Active Zero-Day Alerts</div></div>`);
+  if(SHOW.compliance) tiles.push(
+    `<div class="panel kpi c-accent"><div class="num">${score}</div><div class="lbl">Compliance Score · ${k.compliance_passed}/${k.compliance_total} passing</div></div>`);
+  if(SHOW.certificates) tiles.push(
+    `<div class="panel kpi c-${k.certs_urgent?'critical':(k.certs?'medium':'good')}"><div class="num">${k.certs}</div><div class="lbl">Expiring Certificates · ${k.certs_urgent} &lt; 30 days</div></div>`);
+  tiles.push(
+    `<div class="panel kpi c-${k.software_vulnerable?'critical':'good'}"><div class="num">${k.software_hosts}</div><div class="lbl">Hosts Inventoried · ${k.software_vulnerable} zero-day exposure(s)</div></div>`);
+
+  const catColors = {'Laptop':'var(--low)','Desktop':'var(--accent)','Server':'var(--high)',
+                     'Domain Controller':'var(--critical)','Other':'var(--muted)'};
+  const catPairs = Object.entries(cat).filter(([,n])=>n>0).sort((a,b)=>b[1]-a[1]);
+
+  // The posture banner and severity bar mix compliance, certificate, anomaly and
+  // zero-day findings, so they only appear when at least one of those is switched on.
   return `
-   <h2>Executive Overview <span class="fresh">Anomalies ${timeAgo(f.Anomalies)} · Compliance ${timeAgo(f.Compliance)} · Certs ${timeAgo(f.Certificates)} · Zero-day ${timeAgo(f.ZeroDay)} · Software ${timeAgo(f.SoftwareInventory)}</span></h2>
-   <div class="posture p-${d.posture}"><span class="dot"></span><span class="txt"><b>${d.posture.toUpperCase()}</b> &nbsp;·&nbsp; ${postureTxt}</span></div>
-   <div class="kpis">
-     <div class="panel kpi c-${k.anomalies?'high':'good'}"><div class="num">${k.anomalies}</div><div class="lbl">Security Anomalies</div></div>
-     <div class="panel kpi c-accent"><div class="num">${score}</div><div class="lbl">Compliance Score · ${k.compliance_passed}/${k.compliance_total} passing</div></div>
-     <div class="panel kpi c-${k.zerodays?'critical':'good'}"><div class="num">${k.zerodays}</div><div class="lbl">Active Zero-Day Alerts</div></div>
-     <div class="panel kpi c-${k.certs_urgent?'critical':(k.certs?'medium':'good')}"><div class="num">${k.certs}</div><div class="lbl">Expiring Certificates · ${k.certs_urgent} &lt; 30 days</div></div>
-     <div class="panel kpi c-${k.software_vulnerable?'critical':'good'}"><div class="num">${k.software_hosts}</div><div class="lbl">Hosts Inventoried · ${k.software_vulnerable} zero-day exposure(s)</div></div>
-   </div>
-   <div class="panel"><div class="ph">Open findings by severity (all sources)</div>${sevBar(d.severity_totals)}</div>`;
+   <h2>Executive Overview <span class="fresh">${fresh.join(' · ')}</span></h2>
+   ${security ? `<div class="posture p-${d.posture}"><span class="dot"></span><span class="txt"><b>${d.posture.toUpperCase()}</b> &nbsp;·&nbsp; ${postureTxt}</span></div>` : ''}
+   <div class="kpis">${tiles.join('')}</div>
+   ${security
+     ? `<div class="panel"><div class="ph">Open findings by severity</div>${sevBar(d.severity_totals)}</div>`
+     : `<div class="panel"><div class="ph">Discovered assets by device type</div>${hbars(catPairs, (lab)=>catColors[lab]||'var(--accent)')}</div>`}`;
 }
 
 function gauge(score){
@@ -407,11 +443,16 @@ function renderDiscovery(d){
    </div>`;
 }
 
-const RENDERERS = [renderOverview, renderDiscovery, renderCompliance, renderThreats, renderCerts, renderSoftware];
+// Keyed by section, not position: hidden sections leave gaps in the screen list.
+const RENDERERS = {overview: renderOverview, discovery: renderDiscovery, compliance: renderCompliance,
+                   threats: renderThreats, certificates: renderCerts, software: renderSoftware};
 
 function renderAll(){
   if(!data) return;
-  SCREENS.forEach((sc,i)=>{ try{ sc.innerHTML = RENDERERS[i](data); }catch(e){ sc.innerHTML='<div class="empty">render error</div>'; } });
+  SCREENS.forEach(sc=>{
+    const fn = RENDERERS[sc.dataset.key];
+    try{ sc.innerHTML = fn ? fn(data) : ''; }catch(e){ sc.innerHTML='<div class="empty">render error</div>'; }
+  });
   document.getElementById('demoBadge').style.display = data.demo ? 'inline-block' : 'none';
 }
 

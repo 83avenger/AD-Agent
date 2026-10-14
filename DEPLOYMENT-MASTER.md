@@ -183,6 +183,7 @@ Stop-ScheduledTask -TaskName 'AD-Agent-WebUI'; Start-ScheduledTask -TaskName 'AD
 | `TEAMS_WEBHOOK_URL` | 8 | notify action fails | Teams webhook for SOAR notifications |
 | `ASSETS_DATABASE_URL` | 9 | SQLite | Postgres connection string |
 | `HOST` / `PORT` | 1 | `0.0.0.0` / `5000` | Web UI bind (set host to `127.0.0.1` after Stage 5) |
+| `DASHBOARD_SECTIONS` | 1 | phase 1: `overview,discovery,software` | Screens on `/dashboard`. `all` brings back Compliance Posture, Threats & Anomalies and Certificate Expiry (and their Executive Overview tiles); or list them, e.g. `overview,discovery,compliance,software` |
 
 Every optional feature is **off by default** and says so in the UI rather than failing quietly.
 
