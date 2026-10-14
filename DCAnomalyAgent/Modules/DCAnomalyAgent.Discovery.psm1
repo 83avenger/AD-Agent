@@ -527,7 +527,7 @@ function Export-AssetInventory {
     $Inventory | ConvertTo-Json -Depth 6 | Set-Content -Path $jsonPath -Encoding UTF8
     # Software is a nested per-host array (kept in the JSON for the dashboard's per-device
     # drill-down) and is intentionally left out of the flat CSV.
-    $Inventory | Select-Object Name, IP, AssetType, Category, OS, OpenPorts, Source, LastSeen |
+    $Inventory | Select-Object Name, IP, AssetType, Category, ConnectionType, OS, OpenPorts, Source, LastSeen |
         Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8
 
     # Emit a settings.psd1-style Assets snippet

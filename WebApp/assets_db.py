@@ -94,6 +94,12 @@ _ADDED_COLUMNS = {
     "last_office_checkin": "TEXT",
     "last_remote_checkin": "TEXT",
     "last_location":       "TEXT",   # 'Office' | 'Remote' | 'Unknown'
+    # How the device is connected right now: 'Wi-Fi' | 'LAN' | 'VPN' | 'Mobile' | 'Other',
+    # with '(VPN)' appended when a VPN carries the default route over a physical link
+    # (e.g. 'Wi-Fi (VPN)'). Reported by the push collector and the discovery WinRM probe
+    # from the adapter holding the default route; the adapter name is kept beside it.
+    "connection_type":     "TEXT",
+    "connection_adapter":  "TEXT",
 }
 
 # Daily presence rollup. NOT one row per check-in: presence check-ins run every 30
@@ -307,7 +313,9 @@ def sync_assets(state_dir: Path, assets: list) -> None:
             row = (
                 key, a.get("Name"), a.get("IP"), a.get("AssetType"), a.get("OS"),
                 a.get("OpenPorts"), a.get("Source"), a.get("LastSeen"), a.get("CollectionNote"),
-                json.dumps(software) if software else None, category, now, now,
+                json.dumps(software) if software else None, category,
+                _clean_conn(a.get("ConnectionType")), _clean_conn(a.get("ConnectionAdapter"), 200),
+                now, now,
             )
             if BACKEND == "postgres":
                 # A host discovered first as a bare IP (no reverse DNS yet) that later
@@ -318,8 +326,9 @@ def sync_assets(state_dir: Path, assets: list) -> None:
                     cur.execute("DELETE FROM assets WHERE dedup_key = %s AND dedup_key != %s", (ip, key))
                 cur.execute("""
                     INSERT INTO assets (dedup_key, name, ip, asset_type, os, open_ports,
-                        source, last_seen, collection_note, software_json, category, first_seen, updated_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        source, last_seen, collection_note, software_json, category,
+                        connection_type, connection_adapter, first_seen, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (dedup_key) DO UPDATE SET
                         name            = EXCLUDED.name,
                         ip              = EXCLUDED.ip,
@@ -333,6 +342,8 @@ def sync_assets(state_dir: Path, assets: list) -> None:
                         collection_note = EXCLUDED.collection_note,
                         software_json   = COALESCE(EXCLUDED.software_json, assets.software_json),
                         category        = COALESCE(EXCLUDED.category, assets.category),
+                        connection_type    = COALESCE(EXCLUDED.connection_type, assets.connection_type),
+                        connection_adapter = COALESCE(EXCLUDED.connection_adapter, assets.connection_adapter),
                         updated_at      = EXCLUDED.updated_at
                 """, row)
             else:
@@ -340,8 +351,9 @@ def sync_assets(state_dir: Path, assets: list) -> None:
                     cur.execute("DELETE FROM assets WHERE dedup_key = ? AND dedup_key != ?", (ip, key))
                 cur.execute("""
                     INSERT INTO assets (dedup_key, name, ip, asset_type, os, open_ports,
-                        source, last_seen, collection_note, software_json, category, first_seen, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        source, last_seen, collection_note, software_json, category,
+                        connection_type, connection_adapter, first_seen, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(dedup_key) DO UPDATE SET
                         name            = excluded.name,
                         ip              = excluded.ip,
@@ -355,6 +367,8 @@ def sync_assets(state_dir: Path, assets: list) -> None:
                         collection_note = excluded.collection_note,
                         software_json   = COALESCE(excluded.software_json, assets.software_json),
                         category        = COALESCE(excluded.category, assets.category),
+                        connection_type    = COALESCE(excluded.connection_type, assets.connection_type),
+                        connection_adapter = COALESCE(excluded.connection_adapter, assets.connection_adapter),
                         updated_at      = excluded.updated_at
                 """, row)
         conn.commit()
@@ -381,6 +395,16 @@ def _derive_category(asset_type: str | None, os: str | None) -> str:
     return "Unknown"
 
 
+def _clean_conn(value, max_len: int = 40):
+    """Normalise a device-reported connection field: strings only, trimmed, length-capped
+    (it comes from an endpoint, so it must not be able to write an arbitrary blob into
+    the row), and None for empty so the upsert's COALESCE keeps the last known value."""
+    if not isinstance(value, str):
+        return None
+    value = value.strip()[:max_len]
+    return value or None
+
+
 def _row_to_asset(row) -> dict:
     get = row.__getitem__ if isinstance(row, (dict,)) else (lambda k: row[k])
     try:
@@ -400,7 +424,9 @@ def _row_to_asset(row) -> dict:
                      ("checkin_user", "CheckinUser"),
                      ("last_office_checkin", "LastOfficeCheckin"),
                      ("last_remote_checkin", "LastRemoteCheckin"),
-                     ("last_location", "LastLocation")):
+                     ("last_location", "LastLocation"),
+                     ("connection_type", "ConnectionType"),
+                     ("connection_adapter", "ConnectionAdapter")):
         try:
             val = get(col)
         except (KeyError, IndexError):
@@ -542,14 +568,17 @@ def record_checkin(state_dir: Path, payload: dict, checkin_source: str = "PushCo
             payload.get("OS"), payload.get("Source") or checkin_source, seen,
             json.dumps(software) if software else None,
             seen, checkin_source, payload.get("User"),
-            office_ts, remote_ts, location, now, now,
+            office_ts, remote_ts, location,
+            _clean_conn(payload.get("ConnectionType")), _clean_conn(payload.get("ConnectionAdapter"), 200),
+            now, now,
         )
         if BACKEND == "postgres":
             cur.execute("""
                 INSERT INTO assets (dedup_key, name, ip, asset_type, os, source, last_seen,
                     software_json, last_checkin, checkin_source, checkin_user,
-                    last_office_checkin, last_remote_checkin, last_location, first_seen, updated_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    last_office_checkin, last_remote_checkin, last_location,
+                    connection_type, connection_adapter, first_seen, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (dedup_key) DO UPDATE SET
                     name           = COALESCE(EXCLUDED.name, assets.name),
                     ip             = COALESCE(EXCLUDED.ip, assets.ip),
@@ -564,14 +593,17 @@ def record_checkin(state_dir: Path, payload: dict, checkin_source: str = "PushCo
                     last_office_checkin = COALESCE(EXCLUDED.last_office_checkin, assets.last_office_checkin),
                     last_remote_checkin = COALESCE(EXCLUDED.last_remote_checkin, assets.last_remote_checkin),
                     last_location  = EXCLUDED.last_location,
+                    connection_type    = COALESCE(EXCLUDED.connection_type, assets.connection_type),
+                    connection_adapter = COALESCE(EXCLUDED.connection_adapter, assets.connection_adapter),
                     updated_at     = EXCLUDED.updated_at
             """, row)
         else:
             cur.execute("""
                 INSERT INTO assets (dedup_key, name, ip, asset_type, os, source, last_seen,
                     software_json, last_checkin, checkin_source, checkin_user,
-                    last_office_checkin, last_remote_checkin, last_location, first_seen, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    last_office_checkin, last_remote_checkin, last_location,
+                    connection_type, connection_adapter, first_seen, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(dedup_key) DO UPDATE SET
                     name           = COALESCE(excluded.name, assets.name),
                     ip             = COALESCE(excluded.ip, assets.ip),
@@ -586,6 +618,8 @@ def record_checkin(state_dir: Path, payload: dict, checkin_source: str = "PushCo
                     last_office_checkin = COALESCE(excluded.last_office_checkin, assets.last_office_checkin),
                     last_remote_checkin = COALESCE(excluded.last_remote_checkin, assets.last_remote_checkin),
                     last_location  = excluded.last_location,
+                    connection_type    = COALESCE(excluded.connection_type, assets.connection_type),
+                    connection_adapter = COALESCE(excluded.connection_adapter, assets.connection_adapter),
                     updated_at     = excluded.updated_at
             """, row)
 

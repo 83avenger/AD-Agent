@@ -250,6 +250,13 @@ if (-not $SkipCategorize) {
             $refined = Get-DeviceCategory -ComputerName $asset.Name -AssetType $asset.AssetType
             $asset.Category = $refined
             Write-DiscoveryLog "Categorized $($asset.Name): $before -> $($asset.Category)"
+            # Wi-Fi / LAN / VPN, over the same WinRM path. Optional - never fails the asset.
+            $conn = Get-NetworkConnection -ComputerName $asset.Name
+            if ($conn) {
+                $asset | Add-Member -NotePropertyName ConnectionType -NotePropertyValue $conn.Type -Force
+                $asset | Add-Member -NotePropertyName ConnectionAdapter -NotePropertyValue $conn.Adapter -Force
+                Write-DiscoveryLog "Connection $($asset.Name): $($conn.Type) [$($conn.Adapter)]"
+            }
         } catch {
             $note = "Category probe failed over WinRM: $_. Common causes: gMSA lacks Remote Management Users on this host, WinRM is open but not configured for this identity, or the host is genuinely unreachable."
             Write-DiscoveryLog "ERROR categorize $($asset.Name): $_" -Level ERROR

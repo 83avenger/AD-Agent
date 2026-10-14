@@ -1500,12 +1500,15 @@ def assets_list():
     by_type: dict = {}
     by_category: dict = {}
     by_source: dict = {}
+    by_network: dict = {}
     online_count = 0
     stale_count = 0
     for a in assets:
         by_type[a.get("AssetType", "Unknown")] = by_type.get(a.get("AssetType", "Unknown"), 0) + 1
         by_category[a.get("Category", "Unknown")] = by_category.get(a.get("Category", "Unknown"), 0) + 1
         by_source[a.get("Source", "Unknown")] = by_source.get(a.get("Source", "Unknown"), 0) + 1
+        net = a.get("ConnectionType") or "Not reported"
+        by_network[net] = by_network.get(net, 0) + 1
         if _is_online(a.get("LastSeen")):
             online_count += 1
         if _is_stale(a.get("LastSeen")):
@@ -1521,6 +1524,7 @@ def assets_list():
         by_type=sorted(by_type.items(), key=lambda kv: -kv[1]),
         by_category=sorted(by_category.items(), key=lambda kv: -kv[1]),
         by_source=sorted(by_source.items(), key=lambda kv: -kv[1]),
+        by_network=sorted(by_network.items(), key=lambda kv: -kv[1]),
         last_scan=last_scan,
         is_online=_is_online,
         is_stale=_is_stale,
@@ -1630,7 +1634,10 @@ def endpoints_list():
 
     by_source: dict = {}
     by_location: dict = {}
+    by_network: dict = {}
     for e in endpoints:
+        net = e.get("ConnectionType") or "Not reported"
+        by_network[net] = by_network.get(net, 0) + 1
         s = e.get("CheckinSource", "Unknown")
         by_source[s] = by_source.get(s, 0) + 1
         loc = e.get("LastLocation", "Unknown")
@@ -1649,6 +1656,7 @@ def endpoints_list():
         today_count=len(today),
         by_source=sorted(by_source.items(), key=lambda kv: -kv[1]),
         by_location=sorted(by_location.items(), key=lambda kv: -kv[1]),
+        by_network=sorted(by_network.items(), key=lambda kv: -kv[1]),
         presence=presence,
         presence_days=PRESENCE_WINDOW_DAYS,
         location_configured=bool(_corporate_networks()),

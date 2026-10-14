@@ -1,0 +1,15 @@
+{# Wi-Fi / LAN / VPN badge for an asset or endpoint. The adapter name is in the tooltip.
+   ConnectionType comes from the push collector or the discovery WinRM probe: the adapter
+   holding the default route, with "(VPN)" appended when a VPN rides on top of it. #}
+{% macro network_badge(conn, adapter) -%}
+  {%- if conn -%}
+    {%- set base = conn.split(' ')[0] -%}
+    {%- set style = {'Wi-Fi': 'background:var(--low);color:#fff;',
+                     'LAN': 'background:var(--success);color:#fff;',
+                     'VPN': 'background:var(--medium);color:#1e293b;',
+                     'Mobile': 'background:var(--high);color:#fff;'}.get(base, 'background:var(--border);color:var(--text);') -%}
+    <span class="badge" style="{{ style }}" title="{{ adapter or conn }}">{{ conn }}</span>
+  {%- else -%}
+    <span style="color:var(--muted);" title="Not reported yet - comes from the push collector check-in or a discovery WinRM probe">—</span>
+  {%- endif -%}
+{%- endmacro %}

@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_network.html" import network_badge %}
 {% block title %}Endpoint Check-ins — DC Anomaly Agent{% endblock %}
 
 {% block content %}
@@ -62,6 +63,12 @@
   <div class="checkbox-group">
     {% for s, c in by_source %}<span class="badge badge-low">{{ s }}: {{ c }}</span>{% endfor %}
   </div>
+  {% if by_network %}
+  <div class="card-header" style="margin-top:1rem;">By network (Wi-Fi / LAN)</div>
+  <div class="checkbox-group">
+    {% for t, c in by_network %}<span class="badge badge-low">{{ t }}: {{ c }}</span>{% endfor %}
+  </div>
+  {% endif %}
   {% if by_location %}
   <div class="card-header" style="margin-top:1rem;">By last known location</div>
   <div class="checkbox-group">
@@ -78,13 +85,13 @@
     </svg>
     Check-in feed ({{ total }})
   </div>
-  <input type="text" id="epFilter" placeholder="Filter by device, user, IP, OS…"
+  <input type="text" id="epFilter" placeholder="Filter by device, user, IP, network (Wi-Fi/LAN), OS…"
     style="width:100%; padding:.55rem .85rem; border:1px solid var(--border); border-radius:var(--radius);
       font-size:.875rem; margin-bottom:1rem;" onkeyup="filterEndpoints()">
   <div class="tbl-wrap">
     <table id="epTable">
       <thead><tr>
-        <th>Device</th><th>Signed-in user</th><th>IP</th><th>Type</th>
+        <th>Device</th><th>Signed-in user</th><th>IP</th><th>Type</th><th>Network</th>
         <th>Location</th><th title="Days present in the last {{ presence_days }} days">Office / Remote days</th>
         <th>Last in office</th><th>Source</th><th>Status</th><th>Last check-in</th>
       </tr></thead>
@@ -96,6 +103,7 @@
           <td>{{ e.CheckinUser or '—' }}</td>
           <td>{{ e.IP or '—' }}</td>
           <td>{{ e.AssetType or '—' }}</td>
+          <td>{{ network_badge(e.ConnectionType, e.ConnectionAdapter) }}</td>
           <td>
             {% if e.LastLocation == 'Office' %}
               <span class="badge" style="background:var(--brand-mid); color:white;">Office</span>
@@ -126,7 +134,7 @@
           </td>
         </tr>
         {% else %}
-        <tr><td colspan="10" style="text-align:center; color:var(--muted);">No check-ins received yet.</td></tr>
+        <tr><td colspan="11" style="text-align:center; color:var(--muted);">No check-ins received yet.</td></tr>
         {% endfor %}
       </tbody>
     </table>

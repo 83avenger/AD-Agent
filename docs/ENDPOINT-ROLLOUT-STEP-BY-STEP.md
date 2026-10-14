@@ -561,6 +561,12 @@ server for hosts where WinRM was enabled.
    every 30 min and at startup; the full software inventory runs daily at 13:00.
 2. **Assets** page: the device's row is updated (not duplicated), with **Category**
    (Laptop / Desktop / …) filled in.
+   The **Network** column shows how it's connected: **Wi-Fi**, **LAN**, **VPN** (e.g.
+   `Wi-Fi (VPN)` when a VPN such as WARP runs over Wi-Fi) or **Mobile**. Hover over it to see the adapter.
+   It's reported by the check-in collector and by discovery's WinRM probe. The Endpoints page has
+   the same column, and both pages show a "By network" count. Devices still running an older
+   collector show `—` until they get the current one (rebuild and re-upload the Intune
+   package, 4.8).
 3. If you set `CORPORATE_NETWORKS` on the jump server, check-ins are split into Office vs
    Remote.
 4. For hosts where you enabled WinRM: run a **New Scan → Software Inventory** against one of

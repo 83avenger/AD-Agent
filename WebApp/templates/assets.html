@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_network.html" import network_badge %}
 {% block title %}Discovered Assets — DC Anomaly Agent{% endblock %}
 
 {% block content %}
@@ -54,6 +55,12 @@
     {% for t, c in by_category %}<span class="badge badge-low">{{ t }}: {{ c }}</span>{% endfor %}
   </div>
   {% endif %}
+  {% if by_network %}
+  <div class="card-header" style="margin-top:1rem;">By network (Wi-Fi / LAN)</div>
+  <div class="checkbox-group">
+    {% for t, c in by_network %}<span class="badge badge-low">{{ t }}: {{ c }}</span>{% endfor %}
+  </div>
+  {% endif %}
   <div class="card-header" style="margin-top:1rem;">By source</div>
   <div class="checkbox-group">
     {% for s, c in by_source %}<span class="badge badge-low">{{ s }}: {{ c }}</span>{% endfor %}
@@ -75,12 +82,12 @@
     </form>
     {% endif %}
   </div>
-  <input type="text" id="assetFilter" placeholder="Filter by name, IP, type, source…"
+  <input type="text" id="assetFilter" placeholder="Filter by name, IP, type, network (Wi-Fi/LAN), source…"
     style="width:100%; padding:.55rem .85rem; border:1px solid var(--border); border-radius:var(--radius);
       font-size:.875rem; margin-bottom:1rem;" onkeyup="filterAssets()">
   <div class="tbl-wrap">
     <table id="assetTable">
-      <thead><tr><th>Name</th><th>IP</th><th>Type</th><th>Category</th><th>OS</th><th>Source</th><th>Status</th><th>Last Seen</th><th></th></tr></thead>
+      <thead><tr><th>Name</th><th>IP</th><th>Type</th><th>Category</th><th>Network</th><th>OS</th><th>Source</th><th>Status</th><th>Last Seen</th><th></th></tr></thead>
       <tbody>
         {% for a in assets %}
         <tr>
@@ -94,6 +101,7 @@
               <span style="color:var(--muted);">—</span>
             {% endif %}
           </td>
+          <td>{{ network_badge(a.ConnectionType, a.ConnectionAdapter) }}</td>
           <td>{{ a.OS or '—' }}</td>
           <td>{{ a.Source }}</td>
           <td>
@@ -117,7 +125,7 @@
           </td>
         </tr>
         {% else %}
-        <tr><td colspan="9" style="text-align:center; color:var(--muted);">No assets discovered yet.</td></tr>
+        <tr><td colspan="10" style="text-align:center; color:var(--muted);">No assets discovered yet.</td></tr>
         {% endfor %}
       </tbody>
     </table>

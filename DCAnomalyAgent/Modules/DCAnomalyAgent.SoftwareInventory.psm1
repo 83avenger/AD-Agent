@@ -151,6 +151,66 @@ function Get-DeviceCategory {
     }
 }
 
+$script:ConnectionProbe = {
+    # Which link this device is actually using: the up adapter holding the lowest-metric
+    # IPv4 default route. When that's a VPN/tunnel adapter, report the physical link it
+    # rides on too ('Wi-Fi (VPN)'). Kept identical in Send-InventoryCheckin.ps1 (which
+    # must stay standalone) and DCAnomalyAgent.SoftwareInventory.psm1.
+    function _ConnKind($a) {
+        $text = "$($a.Name) $($a.InterfaceDescription)"
+        $medium = [string]$a.PhysicalMediaType
+        if ($medium -match 'Wireless WAN|WWAN' -or $text -match 'Mobile Broadband|Cellular|WWAN') { return 'Mobile' }
+        if ($medium -match '802\.11' -or $text -match 'Wi-?Fi|Wireless|WLAN|802\.11') { return 'Wi-Fi' }
+        if ($text -match 'VPN|WARP|AnyConnect|GlobalProtect|PANGP|Forti|TAP-Windows|WireGuard|Wintun|Zscaler|Pulse Secure|Juniper|NordLynx|OpenVPN|Check Point|SonicWall|Tunnel') { return 'VPN' }
+        if ($medium -match '802\.3' -or $text -match 'Ethernet|GbE|Gigabit|LAN') { return 'LAN' }
+        return 'Other'
+    }
+    try { $up = @(Get-NetAdapter -ErrorAction Stop | Where-Object { $_.Status -eq 'Up' }) } catch { return $null }
+    if (-not $up) { return $null }
+    $metric = @{}
+    foreach ($r in @(Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue)) {
+        $ipIf = Get-NetIPInterface -InterfaceIndex $r.InterfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue
+        $m = [int]$r.RouteMetric + $(if ($ipIf) { [int]$ipIf.InterfaceMetric } else { 0 })
+        if (-not $metric.ContainsKey($r.InterfaceIndex) -or $m -lt $metric[$r.InterfaceIndex]) { $metric[$r.InterfaceIndex] = $m }
+    }
+    $routed = @($up | Where-Object { $metric.ContainsKey($_.InterfaceIndex) } | Sort-Object { $metric[$_.InterfaceIndex] })
+    $primary = if ($routed) { $routed[0] } else { $up[0] }
+    $type = _ConnKind $primary
+    $adapter = "$($primary.Name) ($($primary.InterfaceDescription))"
+    if ($type -eq 'VPN') {
+        $phys = @(@($routed) + @($up) | Where-Object {
+            $_.InterfaceIndex -ne $primary.InterfaceIndex -and (_ConnKind $_) -in @('Wi-Fi', 'LAN', 'Mobile') } | Select-Object -First 1)
+        if ($phys) {
+            $type = "$(_ConnKind $phys[0]) (VPN)"
+            $adapter = "$($phys[0].Name) ($($phys[0].InterfaceDescription)) via $($primary.InterfaceDescription)"
+        }
+    }
+    [pscustomobject]@{ Type = $type; Adapter = $adapter }
+}
+
+function Get-NetworkConnection {
+    <#
+    .SYNOPSIS
+        How a host is connected right now: Wi-Fi / LAN / VPN / Mobile / Other (e.g.
+        'Wi-Fi (VPN)'), plus the adapter. $null when it can't be determined - never throws,
+        so it can't block discovery.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$ComputerName)
+
+    $isLocal = Test-IsLocalComputer -ComputerName $ComputerName
+    if (-not $isLocal -and -not (Test-WinRmReachable -ComputerName $ComputerName)) { return $null }
+    try {
+        $r = if ($isLocal) {
+            & $script:ConnectionProbe
+        } else {
+            Invoke-Command -ComputerName (Resolve-WinRmTargetName -ComputerName $ComputerName) -ScriptBlock $script:ConnectionProbe
+        }
+        if ($r -and $r.Type) { return [pscustomobject]@{ Type = [string]$r.Type; Adapter = [string]$r.Adapter } }
+    } catch { }
+    return $null
+}
+
 function Get-InstalledSoftware {
     <#
     .SYNOPSIS
@@ -337,6 +397,6 @@ function Format-SoftwareInventoryReport {
     return $sb.ToString()
 }
 
-Export-ModuleMember -Function Get-DeviceCategory, Get-InstalledSoftware, `
+Export-ModuleMember -Function Get-DeviceCategory, Get-NetworkConnection, Get-InstalledSoftware, `
     Find-VulnerableInstalledSoftware, Format-SoftwareInventoryReport, Test-IsLocalComputer, Test-WinRmReachable, `
     Resolve-WinRmTargetName
