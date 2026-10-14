@@ -71,6 +71,15 @@ Import-Module GroupPolicy -ErrorAction Stop
 Import-Module ActiveDirectory -ErrorAction SilentlyContinue
 if (-not $Token) { throw "No -Token given and COLLECTOR_TOKEN is not set in this session. Set it on the jump server with Set-CollectorToken.ps1, then pass it here." }
 
+# Certificates almost never list IP addresses, so an https:// URL with an IP fails every
+# check-in with "Could not establish trust relationship". Warn now rather than at check-in.
+try {
+    $_u = [Uri]$ServerUrl; $_ip = $null
+    if ($_u.Scheme -eq 'https' -and [Net.IPAddress]::TryParse($_u.DnsSafeHost, [ref]$_ip)) {
+        Write-Warning "-ServerUrl uses the IP address '$($_u.DnsSafeHost)'. HTTPS check-ins will fail unless that IP is on the jump server's certificate - use the FQDN on the certificate instead (e.g. https://<jump FQDN>)."
+    }
+} catch { }
+
 $dcOuPattern = 'OU=Domain Controllers,'
 foreach ($ou in $TargetOU) {
     if ($ou -like "*$dcOuPattern*") {

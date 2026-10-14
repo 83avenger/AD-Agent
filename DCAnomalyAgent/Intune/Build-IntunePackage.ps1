@@ -64,6 +64,15 @@ if ($EnableWinRM -and (-not $AllowedRemoteAddress -or ($AllowedRemoteAddress | W
     throw "-EnableWinRM needs -AllowedRemoteAddress listing the jump server (not blank, '*' or 'Any')."
 }
 if ($ServerUrl -notmatch '^https?://') { throw "-ServerUrl must start with http:// or https://" }
+
+# Certificates almost never list IP addresses, so an https:// URL with an IP fails every
+# check-in with "Could not establish trust relationship". Warn now rather than at check-in.
+try {
+    $_u = [Uri]$ServerUrl; $_ip = $null
+    if ($_u.Scheme -eq 'https' -and [Net.IPAddress]::TryParse($_u.DnsSafeHost, [ref]$_ip)) {
+        Write-Warning "-ServerUrl uses the IP address '$($_u.DnsSafeHost)'. HTTPS check-ins will fail unless that IP is on the jump server's certificate - use the FQDN on the certificate instead (e.g. https://<jump FQDN>)."
+    }
+} catch { }
 [void][datetime]::Parse($FullInventoryAt)
 
 $collectorDir = Join-Path (Split-Path -Parent $PSScriptRoot) 'Collector'

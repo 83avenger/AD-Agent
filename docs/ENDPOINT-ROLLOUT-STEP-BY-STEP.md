@@ -15,7 +15,8 @@ Placeholders you'll replace throughout:
 
 | Placeholder | What to put |
 |---|---|
-| `<jump>` | Jump server name, e.g. the host you browse the web UI on |
+| `<jump FQDN>` | The jump server's full name **exactly as it appears on its HTTPS certificate** (see 1.5). Not the IP: certificates don't list IPs, so an IP URL fails every check-in. |
+| `<jump>` | Jump server name (for `Test-NetConnection` etc.) |
 | `<jump-IP>` | Jump server IP address |
 | `<your-laptop-IP>` | Your admin laptop's IP (only for the laptop route / WinRM) |
 | `<COLLECTOR_TOKEN>` | The token printed in step 1.2 |
@@ -125,11 +126,31 @@ ipconfig | Select-String 'IPv4'
 
 Write down `<jump-IP>`, and `<your-laptop-IP>` if you'll use Route C or WinRM.
 
-### 1.5 Network firewall
+### 1.5 HTTPS on 443 and the network firewall
 
-Ask the network team for: **endpoint VLANs → `<jump-IP>` TCP 5000**. This is outbound from
-the endpoints, for the check-ins. If you'll enable WinRM, also ask for **`<jump-IP>` (and
-`<your-laptop-IP>`) → endpoint VLANs TCP 5985**.
+Endpoints check in over **HTTPS on TCP 443**, through the TLS proxy on the jump server. The
+app's own port 5000 doesn't need to be open from endpoints.
+
+1. **The TLS proxy must be running with the full certificate chain.** Follow
+   [`TLS-SETUP.md`](TLS-SETUP.md) Option A (A0–A5). The chain matters: laptops reject a
+   certificate when the server sends only its own certificate and not the issuing CA.
+2. **Find `<jump FQDN>`.** Run on the jump server:
+   ```powershell
+   & 'C:\Program Files\OpenSSL-Win64\bin\openssl.exe' x509 -noout -subject -ext subjectAltName -in C:\Apps\AD-Agent\cert.pem
+   ```
+   Use one of the `DNS:` names it lists.
+3. **Firewall:** you need **endpoint VLANs → jump server TCP 443**. If you'll enable WinRM,
+   also **`<jump-IP>` (and `<your-laptop-IP>`) → endpoint VLANs TCP 5985**.
+4. **Test from one laptop** (as admin, Windows PowerShell). It must return JSON with no
+   error:
+   ```powershell
+   [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+   ```
+   ```powershell
+   Invoke-RestMethod https://<jump FQDN>/healthz
+   ```
+   If this fails with a trust error, fix the certificate before rolling out (Part 7). Every
+   check-in would fail the same way.
 
 ---
 
@@ -156,7 +177,7 @@ The installer looks for the collector right next to itself.
 cd C:\Temp\ADAgent
 ```
 ```powershell
-.\Install-PushCollector.ps1 -ServerUrl 'http://<jump>:5000' -Token '<COLLECTOR_TOKEN>'
+.\Install-PushCollector.ps1 -ServerUrl 'https://<jump FQDN>' -Token '<COLLECTOR_TOKEN>'
 ```
 
 Both `-ServerUrl` and `-Token` are required. Without them you get "-ServerUrl is required".
@@ -164,7 +185,7 @@ Both `-ServerUrl` and `-Token` are required. Without them you get "-ServerUrl is
 **You should see:**
 - `Registered scheduled task 'AD-Agent Check-in'.`
 - `Registered scheduled task 'AD-Agent Full Inventory'.`
-- `SUCCESS - this host is now reporting to http://<jump>:5000.`
+- `SUCCESS - this host is now reporting to https://<jump FQDN>.`
 
 If execution policy blocks the script, run it with
 `powershell -ExecutionPolicy Bypass -File .\Install-PushCollector.ps1 -ServerUrl ... -Token ...`
@@ -173,7 +194,7 @@ If execution policy blocks the script, run it with
 
 **Run on:** your browser
 
-Open `http://<jump>:5000/endpoints`. The laptop is listed with a recent check-in. On the
+Open `https://<jump FQDN>/endpoints`. The laptop is listed with a recent check-in. On the
 **Assets** page its row is updated, with the device type in the **Category** column.
 
 ### 2.4 (Optional) Turn on WinRM on this endpoint
@@ -229,12 +250,12 @@ cd C:\AD-Agent\DCAnomalyAgent\Install
 
 Preview first:
 ```powershell
-.\New-PushCollectorGPO.ps1 -ServerUrl 'http://<jump>:5000' -Token '<COLLECTOR_TOKEN>' -TargetOU '<Laptops OU DN>' -TightenAcl -WhatIf
+.\New-PushCollectorGPO.ps1 -ServerUrl 'https://<jump FQDN>' -Token '<COLLECTOR_TOKEN>' -TargetOU '<Laptops OU DN>' -TightenAcl -WhatIf
 ```
 
 Then run it for real (same line without `-WhatIf`):
 ```powershell
-.\New-PushCollectorGPO.ps1 -ServerUrl 'http://<jump>:5000' -Token '<COLLECTOR_TOKEN>' -TargetOU '<Laptops OU DN>' -TightenAcl
+.\New-PushCollectorGPO.ps1 -ServerUrl 'https://<jump FQDN>' -Token '<COLLECTOR_TOKEN>' -TargetOU '<Laptops OU DN>' -TightenAcl
 ```
 
 **You should see:** "Staged collector scripts to \\…\SYSVOL\…", "Created GPO
@@ -343,12 +364,12 @@ cd C:\AD-Agent\DCAnomalyAgent\Intune
 
 Collector only (recommended for laptops):
 ```powershell
-.\Build-IntunePackage.ps1 -ServerUrl 'http://<jump>:5000' -Token '<COLLECTOR_TOKEN>'
+.\Build-IntunePackage.ps1 -ServerUrl 'https://<jump FQDN>' -Token '<COLLECTOR_TOKEN>'
 ```
 
 Collector + WinRM opened to the jump server only:
 ```powershell
-.\Build-IntunePackage.ps1 -ServerUrl 'http://<jump>:5000' -Token '<COLLECTOR_TOKEN>' -EnableWinRM -AllowedRemoteAddress <jump-IP>
+.\Build-IntunePackage.ps1 -ServerUrl 'https://<jump FQDN>' -Token '<COLLECTOR_TOKEN>' -EnableWinRM -AllowedRemoteAddress <jump-IP>
 ```
 
 **You should see:** two files written to `C:\AD-Agent\Build\out\intune\`:
@@ -476,7 +497,7 @@ those are. Being on the same VLAN doesn't get you past an endpoint's own firewal
 cd C:\AD-Agent\DCAnomalyAgent\Install
 ```
 ```powershell
-.\Invoke-RemoteEndpointSetup.ps1 -ComputerName <endpoint-name> -EnableWinRM -AllowedRemoteAddress <jump-IP>,<your-laptop-IP> -InstallCollector -ServerUrl 'http://<jump>:5000' -Token '<COLLECTOR_TOKEN>' -WhatIf
+.\Invoke-RemoteEndpointSetup.ps1 -ComputerName <endpoint-name> -EnableWinRM -AllowedRemoteAddress <jump-IP>,<your-laptop-IP> -InstallCollector -ServerUrl 'https://<jump FQDN>' -Token '<COLLECTOR_TOKEN>' -WhatIf
 ```
 
 - Use the endpoint's **name**, not its IP.
@@ -491,17 +512,17 @@ cd C:\AD-Agent\DCAnomalyAgent\Install
 
 The same command without `-WhatIf`:
 ```powershell
-.\Invoke-RemoteEndpointSetup.ps1 -ComputerName <endpoint-name> -EnableWinRM -AllowedRemoteAddress <jump-IP>,<your-laptop-IP> -InstallCollector -ServerUrl 'http://<jump>:5000' -Token '<COLLECTOR_TOKEN>'
+.\Invoke-RemoteEndpointSetup.ps1 -ComputerName <endpoint-name> -EnableWinRM -AllowedRemoteAddress <jump-IP>,<your-laptop-IP> -InstallCollector -ServerUrl 'https://<jump FQDN>' -Token '<COLLECTOR_TOKEN>'
 ```
 
 For many hosts, use a text file with one name per line:
 ```powershell
-.\Invoke-RemoteEndpointSetup.ps1 -InputFile C:\Temp\hosts.txt -EnableWinRM -AllowedRemoteAddress <jump-IP>,<your-laptop-IP> -InstallCollector -ServerUrl 'http://<jump>:5000' -Token '<COLLECTOR_TOKEN>'
+.\Invoke-RemoteEndpointSetup.ps1 -InputFile C:\Temp\hosts.txt -EnableWinRM -AllowedRemoteAddress <jump-IP>,<your-laptop-IP> -InstallCollector -ServerUrl 'https://<jump FQDN>' -Token '<COLLECTOR_TOKEN>'
 ```
 
 Or a whole OU:
 ```powershell
-.\Invoke-RemoteEndpointSetup.ps1 -SearchBase '<Laptops OU DN>' -EnableWinRM -AllowedRemoteAddress <jump-IP>,<your-laptop-IP> -InstallCollector -ServerUrl 'http://<jump>:5000' -Token '<COLLECTOR_TOKEN>'
+.\Invoke-RemoteEndpointSetup.ps1 -SearchBase '<Laptops OU DN>' -EnableWinRM -AllowedRemoteAddress <jump-IP>,<your-laptop-IP> -InstallCollector -ServerUrl 'https://<jump FQDN>' -Token '<COLLECTOR_TOKEN>'
 ```
 
 ### 5.4 Read the report
@@ -528,7 +549,7 @@ server for hosts where WinRM was enabled.
 
 ## Part 6 — Confirm discovery worked (all routes)
 
-**Run on:** your browser, at `http://<jump>:5000`
+**Run on:** your browser, at `https://<jump FQDN>`
 
 1. **Endpoints** page: each rolled-out device shows a recent check-in. The presence task runs
    every 30 min and at startup; the full software inventory runs daily at 13:00.
@@ -545,7 +566,10 @@ server for hosts where WinRM was enabled.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `-ServerUrl is required (e.g. …)` | The installer was run with no parameters | Add `-ServerUrl 'http://<jump>:5000' -Token '<COLLECTOR_TOKEN>'` (2.2) |
+| `-ServerUrl is required (e.g. …)` | The installer was run with no parameters | Add `-ServerUrl 'https://<jump FQDN>' -Token '<COLLECTOR_TOKEN>'` (2.2) |
+| "Tasks were not created", but `collector.log` has a line every 30 minutes | The tasks **are** there; those lines are the tasks running | `Get-ScheduledTask 'AD-Agent*'`. In Task Scheduler, they're in the root of the Library (press F5 to refresh). |
+| `collector.log`: `Could not establish trust relationship for the SSL/TLS secure channel` | The laptop rejects the jump server's HTTPS certificate | Read the **`TLS diagnosis:`** line logged just before it. It names one of three causes: (1) **URL host not on the certificate**: rebuild/redeploy with `https://<jump FQDN>` using a name on the cert (1.5 step 2), not the IP. (2) **Chain stops at the server certificate**: rebuild `cert.pem` with the chain ([TLS-SETUP](TLS-SETUP.md) A2) and restart `AD-Agent-TlsProxy`. (3) **Device doesn't have the root CA**: deploy the root to Trusted Root Certification Authorities (GPO, or Intune → Devices → Configuration → *Trusted certificate* profile). Then retest with 1.5 step 4. |
+| `collector.log`: `Could not create SSL/TLS secure channel` | Old TLS settings on the device | The updated collector forces TLS 1.2. Rebuild and redeploy (Intune 4.2 + 4.8). |
 | `Collector script not found at …` | `Send-InventoryCheckin.ps1` isn't in the same folder as the installer | Copy both files together (2.1), or add `-SourcePath <path>\Send-InventoryCheckin.ps1` |
 | The jump server itself shows up as a new endpoint | The installer was run on the jump server | Run `.\Install-PushCollector.ps1 -Uninstall` on the jump server; run the installer **on the endpoint** |
 | Check-in returns `503 collector endpoint disabled` | The token isn't set on the jump server | 1.2 with `-RestartWebUI` |
@@ -556,7 +580,7 @@ server for hosts where WinRM was enabled.
 | `endpoint-setup.log` shows `Failed: …` | The script hit an error on the device | The message says what failed. Fix and re-sync; a Remediation retries automatically. |
 | Route C: `Blocked` | The endpoint drops 5985 and 135 | Expected for many laptops. Use Route A or B. |
 | Route C: `Access denied` | A local account filtered by remote UAC, or an account that isn't admin | Use a domain account in local Administrators (5.1) |
-| Tasks exist but no `Check-in accepted` | The endpoint can't reach `http://<jump>:5000`, or the token is wrong | On the endpoint, run `Test-NetConnection <jump> -Port 5000`. False means a network firewall rule is missing (1.5). Read `collector.log` for the real error. `Get-ScheduledTaskInfo -TaskName 'AD-Agent Check-in'` shows LastRunTime/LastTaskResult. |
+| Tasks exist but no `Check-in accepted` | The endpoint can't reach `https://<jump FQDN>`, or the token is wrong | On the endpoint, run `Test-NetConnection <jump FQDN> -Port 443`. False means a network firewall rule is missing, or the TLS proxy isn't running (1.5). Read `collector.log` for the real error. `Get-ScheduledTaskInfo -TaskName 'AD-Agent Check-in'` shows LastRunTime/LastTaskResult. |
 | `Test-WinRMReadiness` all PASS but the jump server still sees 5985 closed | The block is between the two machines | Network firewall, or the jump server's IP isn't inside the rule's allowed addresses. Re-run 3.2 / 2.4 with the right `<jump-IP>`. |
 
 ---

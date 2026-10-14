@@ -156,6 +156,116 @@ function Get-LocalSoftware {
     return @($items | Sort-Object Name, Version -Unique)
 }
 
+function Get-TlsDiagnosis {
+    <#
+    .SYNOPSIS
+        After an HTTPS check-in fails on the certificate, work out WHY and say it in one line.
+    .DESCRIPTION
+        "Could not establish trust relationship for the SSL/TLS secure channel" covers three
+        different problems with three different fixes: the URL host isn't on the
+        certificate, the server doesn't send its intermediate CA, or this device doesn't
+        trust the root CA. This repeats the TLS handshake on its own socket, records what
+        Windows' own validation said (the callback sees the platform's verdict and chain),
+        and turns that into a specific instruction. It's a probe only: the callback returns
+        $true so the handshake completes, but nothing is ever sent over the connection, and
+        the real check-in still fails closed.
+    #>
+    param([Parameter(Mandatory)][string]$Uri, [int]$TimeoutMs = 8000)
+
+    try { $u = [Uri]$Uri } catch { return "TLS diagnosis: '$Uri' is not a valid URL." }
+    if ($u.Scheme -ne 'https') { return $null }
+    $target = $u.DnsSafeHost
+    $port = if ($u.Port -gt 0) { $u.Port } else { 443 }
+
+    # A hashtable is a reference type, so the closure below writes into this same object.
+    $state = @{ Errors = $null; Cert = $null; Status = @(); Chain = @() }
+    $callback = {
+        param($sender, $certificate, $chain, $policyErrors)
+        $state.Errors = $policyErrors
+        if ($certificate) {
+            $state.Cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 -ArgumentList $certificate
+        }
+        if ($chain) {
+            # Copy out now - the chain object isn't guaranteed to outlive the callback.
+            $state.Status = @($chain.ChainStatus | ForEach-Object { [string]$_.Status })
+            $state.Chain = @($chain.ChainElements | ForEach-Object { [pscustomobject]@{ Subject = $_.Certificate.Subject; Issuer = $_.Certificate.Issuer } })
+        }
+        return $true
+    }.GetNewClosure()
+
+    $tcp = New-Object System.Net.Sockets.TcpClient
+    try {
+        $connect = $tcp.ConnectAsync($target, $port)
+        $done = $false
+        try { $done = $connect.Wait($TimeoutMs) } catch { }
+        if (-not $done -or $connect.IsFaulted -or -not $tcp.Connected) {
+            return "TLS diagnosis: cannot open TCP $port on '$target' - check DNS and the firewall path."
+        }
+        $ssl = New-Object System.Net.Security.SslStream -ArgumentList $tcp.GetStream(), $false, ([System.Net.Security.RemoteCertificateValidationCallback]$callback)
+        try {
+            $ssl.AuthenticateAsClient($target, $null, [System.Security.Authentication.SslProtocols]::Tls12, $false)
+        } finally {
+            $ssl.Dispose()
+        }
+    } catch {
+        $inner = $_.Exception
+        while ($inner.InnerException) { $inner = $inner.InnerException }
+        return "TLS diagnosis: TLS 1.2 handshake with ${target}:$port failed ($($inner.Message)) - is the TLS proxy running and is this the HTTPS port?"
+    } finally {
+        $tcp.Dispose()
+    }
+
+    $cert = $state.Cert
+    if (-not $cert) { return "TLS diagnosis: ${target}:$port presented no certificate." }
+
+    # Names on the certificate: SAN DNS entries (Windows formats them 'DNS Name=x',
+    # OpenSSL-based platforms 'DNS:x') plus the subject CN.
+    $names = @()
+    $san = $cert.Extensions | Where-Object { $_.Oid.Value -eq '2.5.29.17' } | Select-Object -First 1
+    if ($san) {
+        $names += [regex]::Matches($san.Format($false), '(?:DNS Name=|DNS:)\s*([^,\s]+)') | ForEach-Object { $_.Groups[1].Value }
+    }
+    $cn = [regex]::Match($cert.Subject, 'CN=([^,]+)')
+    if ($cn.Success) { $names += $cn.Groups[1].Value.Trim() }
+    $names = @($names | Select-Object -Unique)
+
+    $errors = [string]$state.Errors
+    $problems = @()
+    if ($errors -match 'RemoteCertificateNameMismatch') {
+        $problems += "URL host '$target' is not on the certificate (names: $($names -join ', ')) - set -ServerUrl to https://<one of those names>."
+    }
+    if ($errors -match 'RemoteCertificateChainErrors') {
+        $status = @($state.Status)
+        $chainList = @($state.Chain)
+        $last = if ($chainList) { $chainList[-1] } else { $null }
+        if ($status -contains 'PartialChain') {
+            # Where the chain stops says what's missing: stopping at the leaf means no
+            # intermediate was available; stopping at a CA cert means its issuer (the root)
+            # isn't on this device.
+            if ($chainList.Count -le 1) {
+                $problems += "PartialChain - the chain stops at the server certificate: the server isn't sending its intermediate CA '$($cert.Issuer)' (export cert.pem with the full chain, leaf first), and this device doesn't have it either."
+            } else {
+                $problems += "PartialChain - the chain reaches '$($last.Subject)' but this device doesn't have its issuer, the root CA '$($last.Issuer)' - deploy that root to Trusted Root Certification Authorities (GPO or an Intune trusted certificate profile)."
+            }
+        }
+        if ($status -contains 'UntrustedRoot') {
+            $problems += "UntrustedRoot - this device doesn't trust the root CA '$($last.Subject)' - deploy it to Trusted Root Certification Authorities (GPO or an Intune trusted certificate profile)."
+        }
+        if ($status -contains 'NotTimeValid') {
+            $problems += "NotTimeValid - the certificate is expired or not yet valid (valid $($cert.NotBefore) to $($cert.NotAfter)); also check this device's clock."
+        }
+        $other = @($status | Where-Object { $_ -notin @('PartialChain', 'UntrustedRoot', 'NotTimeValid', 'NoError') } | Select-Object -Unique)
+        if ($other) { $problems += "Chain status: $($other -join ', ')." }
+        if (-not $status) { $problems += "Certificate chain rejected (no further detail from the platform)." }
+    }
+    if ($errors -match 'RemoteCertificateNotAvailable') { $problems += "The server did not provide a certificate." }
+
+    if (-not $problems) {
+        return "TLS diagnosis: the certificate for '$target' (names: $($names -join ', ')) validates on this device - the failure is not the certificate."
+    }
+    return "TLS diagnosis: " + ($problems -join ' ')
+}
+
 $hostname = $env:COMPUTERNAME
 try {
     $fqdn = ([System.Net.Dns]::GetHostEntry($hostname)).HostName
@@ -184,7 +294,19 @@ Write-CollectorLog "Collected: $fqdn ($($payload.IP)) $($payload.AssetType) - $s
 $uri = "$($ServerUrl.TrimEnd('/'))/api/collector/checkin"
 $body = $payload | ConvertTo-Json -Depth 4 -Compress
 
+# Windows PowerShell 5.1 on older .NET defaults can offer only SSL3/TLS 1.0, which the
+# AD-Agent TLS proxy refuses (TLS 1.2 minimum). Add TLS 1.2 to whatever is configured -
+# unless the machine is on SystemDefault (0), where the OS already negotiates 1.2+ and
+# setting explicit flags would only rule out TLS 1.3.
+try {
+    $sp = [Net.ServicePointManager]::SecurityProtocol
+    if ([int]$sp -ne 0 -and -not ($sp -band [Net.SecurityProtocolType]::Tls12)) {
+        [Net.ServicePointManager]::SecurityProtocol = $sp -bor [Net.SecurityProtocolType]::Tls12
+    }
+} catch { }
+
 $sent = $false
+$tlsDiagnosed = $false
 for ($attempt = 1; $attempt -le $Retries; $attempt++) {
     try {
         $resp = Invoke-RestMethod -Uri $uri -Method Post -Body $body `
@@ -196,6 +318,13 @@ for ($attempt = 1; $attempt -le $Retries; $attempt++) {
         break
     } catch {
         $msg = $_.Exception.Message
+        # A certificate problem won't fix itself between retries - explain it once, then
+        # carry on with the normal retry/fail path.
+        if (-not $tlsDiagnosed -and $msg -match 'trust relationship|SSL|TLS|secure channel|certificate') {
+            $tlsDiagnosed = $true
+            $diag = Get-TlsDiagnosis -Uri $uri
+            if ($diag) { Write-CollectorLog $diag 'ERROR' }
+        }
         if ($attempt -lt $Retries) {
             # Backoff: a laptop that just resumed often has an adapter that isn't
             # usable for a few seconds, and WARP may still be establishing its tunnel.

@@ -81,6 +81,15 @@ if ($Uninstall) {
 if (-not $ServerUrl) { throw "-ServerUrl is required (e.g. 'https://jump-jeremy.amg.local')." }
 if (-not $Token)     { throw "-Token is required - use the same value as the jump server's COLLECTOR_TOKEN." }
 
+# Certificates almost never list IP addresses, so an https:// URL with an IP fails every
+# check-in with "Could not establish trust relationship". Warn now rather than at check-in.
+try {
+    $_u = [Uri]$ServerUrl; $_ip = $null
+    if ($_u.Scheme -eq 'https' -and [Net.IPAddress]::TryParse($_u.DnsSafeHost, [ref]$_ip)) {
+        Write-Warning "-ServerUrl uses the IP address '$($_u.DnsSafeHost)'. HTTPS check-ins will fail unless that IP is on the jump server's certificate - use the FQDN on the certificate instead (e.g. https://<jump FQDN>)."
+    }
+} catch { }
+
 if (-not $SourcePath) { $SourcePath = Join-Path $PSScriptRoot 'Send-InventoryCheckin.ps1' }
 if (-not (Test-Path $SourcePath)) {
     throw "Collector script not found at '$SourcePath'. Copy Send-InventoryCheckin.ps1 alongside this installer, or pass -SourcePath."
