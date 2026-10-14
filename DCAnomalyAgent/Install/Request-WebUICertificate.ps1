@@ -27,6 +27,14 @@
     Friendly name stamped on the cert in the store.
 .PARAMETER InfOnly
     Skip auto-enrollment and just emit the certreq .inf + instructions.
+.PARAMETER ExportableKey
+    Request the certificate with an EXPORTABLE private key - required for the Python TLS
+    proxy, which needs the key as a file (Install-WebUICertificate.ps1 does that export).
+    Get-Certificate can't ask for this (the template decides), so this uses certreq with
+    'Exportable = TRUE' and runs the request/submit/accept steps itself.
+.PARAMETER CAConfig
+    'CAHost\CAName' to submit to (with -ExportableKey). Without it, certreq shows a CA
+    picker. Find it with: certutil -config - -ping
 
 .EXAMPLE
     .\Request-WebUICertificate.ps1
@@ -35,13 +43,20 @@
 .EXAMPLE
     .\Request-WebUICertificate.ps1 -Template 'AMG Web Server'
     Use a specifically-named template your CA publishes.
+
+.EXAMPLE
+    .\Request-WebUICertificate.ps1 -ExportableKey
+    Certificate for the Python TLS proxy (exportable key), then:
+    .\Install-WebUICertificate.ps1 -Thumbprint <printed thumbprint>
 #>
 [CmdletBinding()]
 param(
     [string[]]$DnsName,
     [string]$Template = 'WebServer',
     [string]$FriendlyName = 'AD-Agent Web UI',
-    [switch]$InfOnly
+    [switch]$InfOnly,
+    [switch]$ExportableKey,
+    [string]$CAConfig
 )
 
 $ErrorActionPreference = 'Stop'
@@ -66,7 +81,7 @@ function Show-Next {
     Write-Host "can keep registering over plain http://$primary`:5000 for now. See docs/TLS-SETUP.md."
 }
 
-if (-not $InfOnly) {
+if (-not $InfOnly -and -not $ExportableKey) {
     $isElevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
     if (-not $isElevated) { throw "Run elevated - the certificate is placed in the LocalMachine store." }
     try {
@@ -98,7 +113,7 @@ Signature = "`$Windows NT`$"
 Subject = "CN=$primary"
 KeySpec = 1
 KeyLength = 2048
-Exportable = FALSE
+Exportable = $(if ($ExportableKey) { 'TRUE' } else { 'FALSE' })
 MachineKeySet = TRUE
 SMIME = FALSE
 PrivateKeyArchive = FALSE
@@ -123,7 +138,49 @@ CertificateTemplate = $Template
 
 $infPath = Join-Path $env:TEMP 'adagent-webui-cert.inf'
 $reqPath = Join-Path $env:TEMP 'adagent-webui-cert.req'
+$cerPath = Join-Path $env:TEMP 'adagent-webui-cert.cer'
 Set-Content -Path $infPath -Value $inf -Encoding ASCII
+
+if ($ExportableKey -and -not $InfOnly) {
+    # Do the three certreq steps here rather than printing them - joined or mistyped
+    # commands were the usual failure when this was manual.
+    $isElevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    if (-not $isElevated) { throw "Run elevated - the key is created in the machine key store." }
+    Remove-Item $reqPath, $cerPath -ErrorAction SilentlyContinue
+    $started = (Get-Date).AddMinutes(-1)
+
+    Write-Host "Creating the request (exportable key) for: $($DnsName -join ', ') ..."
+    certreq -f -q -new $infPath $reqPath | Out-Host
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $reqPath)) { throw "certreq -new failed (exit $LASTEXITCODE)." }
+
+    Write-Host "Submitting to the CA$(if ($CAConfig) { " '$CAConfig'" } else { ' (pick your CA in the dialog)' }) ..."
+    $submitArgs = @('-f', '-submit')
+    if ($CAConfig) { $submitArgs += @('-config', $CAConfig) }
+    certreq @submitArgs $reqPath $cerPath | Out-Host
+    if (-not (Test-Path $cerPath)) {
+        throw "The CA did not issue the certificate (pending approval, or the template '$Template' isn't available to this computer). If it's pending, retrieve it later with 'certreq -retrieve <RequestId> $cerPath' and then 'certreq -accept $cerPath'."
+    }
+
+    certreq -accept $cerPath | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw "certreq -accept failed (exit $LASTEXITCODE)." }
+
+    $cert = Get-ChildItem Cert:\LocalMachine\My |
+        Where-Object { $_.Subject -eq "CN=$primary" -and $_.HasPrivateKey -and $_.NotBefore -ge $started.ToUniversalTime().AddMinutes(-60) } |
+        Sort-Object NotBefore -Descending | Select-Object -First 1
+    if (-not $cert) {
+        $cert = Get-ChildItem Cert:\LocalMachine\My | Where-Object { $_.Subject -eq "CN=$primary" -and $_.HasPrivateKey } |
+            Sort-Object NotBefore -Descending | Select-Object -First 1
+    }
+    if (-not $cert) { throw "Certificate accepted but not found in Cert:\LocalMachine\My - check certlm.msc." }
+    if ($FriendlyName) { $cert.FriendlyName = $FriendlyName }
+
+    Write-Host ""
+    Write-Host "Certificate thumbprint: $($cert.Thumbprint)" -ForegroundColor Green
+    Write-Host "Names: $($DnsName -join ', ')   Expires: $($cert.NotAfter)   Key: exportable"
+    Write-Host "Put it on the TLS proxy (builds cert.pem/key.pem, restarts the proxy, tests it):"
+    Write-Host "  .\Install-WebUICertificate.ps1 -Thumbprint $($cert.Thumbprint)"
+    return
+}
 
 Write-Host ""
 Write-Host "Wrote a certificate request template: $infPath" -ForegroundColor Cyan

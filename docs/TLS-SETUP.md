@@ -26,6 +26,34 @@ There are two ways to put TLS in front. Pick one:
 
 Run every step on the **jump server**, in an **elevated** PowerShell, **one command per line**.
 
+### Quick path (recommended): two commands
+
+```powershell
+cd C:\Apps\AD-Agent\DCAnomalyAgent\Install
+```
+```powershell
+.\Request-WebUICertificate.ps1 -ExportableKey
+```
+
+This requests a certificate for this host's FQDN plus its short name, with an **exportable**
+key (pick your CA if a dialog appears). It prints a thumbprint. If you already have a suitable
+certificate in `certlm.msc` → Personal (issued to the FQDN, Web Server template), skip this
+command and use that certificate's thumbprint.
+
+```powershell
+.\Install-WebUICertificate.ps1 -Thumbprint <thumbprint>
+```
+
+It checks the certificate before changing anything. Then it writes `cert.pem` (with the CA
+chain) and `key.pem`, locks the key down, backs up the old files, restarts `AD-Agent-TlsProxy`,
+and tests what the proxy now serves. It stops with a clear reason if the certificate is wrong:
+- the name you browse isn't in its **Subject Alternative Name**;
+- it's expired, or not for Server Authentication;
+- its key can't be exported.
+
+`-Auto` picks the newest suitable certificate itself. A1–A5 below are the same steps done by
+hand.
+
 ### A0. Make sure the proxy file is on the server
 
 ```powershell
@@ -194,6 +222,8 @@ single host: re-run `Install-PushCollector.ps1`). The installers warn if you pas
 | Proxy task runs but nothing listens on 443 | IIS holds 443 (A3), or run the proxy in the foreground to see the error: `C:\Apps\Python312\python.exe C:\Apps\AD-Agent\WebApp\tls_proxy.py --cert C:\Apps\AD-Agent\cert.pem --key C:\Apps\AD-Agent\key.pem` |
 | Laptop `collector.log`: `Could not establish trust relationship for the SSL/TLS secure channel` | The next line, `TLS diagnosis: ...`, names the cause: **URL host not on the certificate** → use the FQDN on the cert (A6); **chain stops at the server certificate** → rebuild `cert.pem` with the chain (A2) and restart the proxy; **device doesn't have the root CA** → deploy the root to Trusted Root Certification Authorities (GPO, or an Intune *Trusted certificate* profile) |
 | Browser warns about the name | Browse with a name listed by the `subjectAltName` check in A2 |
+| Browser shows **Not secure** / `NET::ERR_CERT_COMMON_NAME_INVALID`, and the certificate viewer shows e.g. `CN=<short-name>` | Chrome and Edge **ignore the Common Name**. The name you browse (`<host>.<domain>`) must be in the certificate's **Subject Alternative Name**. Use a certificate issued to the FQDN: `Request-WebUICertificate.ps1 -ExportableKey`, then `Install-WebUICertificate.ps1 -Thumbprint <thumb>` (it refuses certificates without the right name). Then close every browser window and reopen it. |
+| `Install-WebUICertificate`: "key isn't exportable" | That certificate was issued with a non-exportable key, and the proxy needs the key as a file. Request a new one with `-ExportableKey`, or in certlm.msc tick **Make private key exportable** on the Private Key tab |
 | `cert.pem`/`key.pem` missing after an update (proxy not listening, OpenSSL "No such file") | An older `Update-Deployment.ps1` deleted them. Restore with `Copy-Item C:\Apps\AD-Agent-backup-<latest>\cert.pem, C:\Apps\AD-Agent-backup-<latest>\key.pem, C:\Apps\AD-Agent-backup-<latest>\webui.pfx C:\Apps\AD-Agent\`, re-apply the key ACL (A2), and restart `AD-Agent-TlsProxy` |
 
 ---

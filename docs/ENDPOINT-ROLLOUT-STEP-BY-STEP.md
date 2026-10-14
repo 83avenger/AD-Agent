@@ -138,7 +138,9 @@ Endpoints check in over **HTTPS on TCP 443**, through the TLS proxy on the jump 
 app's own port 5000 doesn't need to be open from endpoints.
 
 1. **The TLS proxy must be running with the full certificate chain.** Follow
-   [`TLS-SETUP.md`](TLS-SETUP.md) Option A (A0–A5). The chain matters: laptops reject a
+   [`TLS-SETUP.md`](TLS-SETUP.md) Option A. The quick path is `Request-WebUICertificate.ps1 -ExportableKey`
+   then `Install-WebUICertificate.ps1 -Thumbprint <thumb>`, which also checks the name is on the
+   certificate. The chain matters: laptops reject a
    certificate when the server sends only its own certificate and not the issuing CA.
 2. **Find `<jump FQDN>`.** Run on the jump server:
    ```powershell
