@@ -118,6 +118,12 @@ then `python -m pip install --no-index --find-links <folder> cryptography` - and
 `-Pfx` instead of `-CertPem/-KeyPem` in A3. The PowerShell 7 `ExportCertificatePem()` methods
 do **not** exist in Windows PowerShell 5.1.)
 
+> **Updating the server:** `Update-Deployment.ps1` replaces the code tree. Older versions
+> **deleted** `cert.pem` / `key.pem` / `webui.pfx` from `C:\Apps\AD-Agent` (they're not in the
+> repo). Current versions keep top-level `*.pem *.pfx *.key *.crt *.cer`, with their
+> permissions, and restart the TLS proxy. If yours was older, copy the three files out of
+> `C:\Apps\AD-Agent` first, or restore them from `C:\Apps\AD-Agent-backup-<date>` afterwards.
+
 ### A3. Free port 443 if IIS has it
 
 If IIS is installed it usually holds 443, and the proxy can't bind. Check:
@@ -188,6 +194,7 @@ single host: re-run `Install-PushCollector.ps1`). The installers warn if you pas
 | Proxy task runs but nothing listens on 443 | IIS holds 443 (A3), or run the proxy in the foreground to see the error: `C:\Apps\Python312\python.exe C:\Apps\AD-Agent\WebApp\tls_proxy.py --cert C:\Apps\AD-Agent\cert.pem --key C:\Apps\AD-Agent\key.pem` |
 | Laptop `collector.log`: `Could not establish trust relationship for the SSL/TLS secure channel` | The next line, `TLS diagnosis: ...`, names the cause: **URL host not on the certificate** → use the FQDN on the cert (A6); **chain stops at the server certificate** → rebuild `cert.pem` with the chain (A2) and restart the proxy; **device doesn't have the root CA** → deploy the root to Trusted Root Certification Authorities (GPO, or an Intune *Trusted certificate* profile) |
 | Browser warns about the name | Browse with a name listed by the `subjectAltName` check in A2 |
+| `cert.pem`/`key.pem` missing after an update (proxy not listening, OpenSSL "No such file") | An older `Update-Deployment.ps1` deleted them. Restore with `Copy-Item C:\Apps\AD-Agent-backup-<latest>\cert.pem, C:\Apps\AD-Agent-backup-<latest>\key.pem, C:\Apps\AD-Agent-backup-<latest>\webui.pfx C:\Apps\AD-Agent\`, re-apply the key ACL (A2), and restart `AD-Agent-TlsProxy` |
 
 ---
 

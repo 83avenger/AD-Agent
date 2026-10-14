@@ -68,7 +68,13 @@ git pull origin claude/optimistic-bohr-tnmeli
 ```
 
 Replace `C:\AD-Agent` (your git clone) and `C:\Apps\AD-Agent` (the running deployment) if
-yours differ. Add `-WhatIf` first to preview. If the server has no git, copy the repo folder
+yours differ.
+
+**If the HTTPS proxy is set up**, check the server's copy of `Update-Deployment.ps1` has the
+`$PreserveRootFilePatterns` line. If it doesn't, it's an older version that **deletes**
+`cert.pem` / `key.pem` / `webui.pfx`. Copy them out of `C:\Apps\AD-Agent` before running it,
+or restore them from `C:\Apps\AD-Agent-backup-<date>` afterwards
+([TLS-SETUP.md](TLS-SETUP.md) troubleshooting). Add `-WhatIf` first to preview. If the server has no git, copy the repo folder
 over instead of `git pull`.
 
 **Check:** these must all print `True`:
